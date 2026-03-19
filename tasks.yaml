@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────
+# Week 1 Tasks — Data Trust & CI Cleanup
+# ─────────────────────────────────────────────────
+# Priority: items that must be right for financial users
+# Groq for cheap tasks, Claude for data/frontend work
+
+tasks:
+
+  # ── CI/CD cleanup (Groq — fast, cheap, well-defined) ────
+
+  - id: fix-overnight-tests-index
+    template: docs_cleanup
+    issue: >
+      docs/overnight_tests/INDEX.md still references
+      04_exit_score_calibration.md, which has been deleted.
+      Remove that reference. Do not change any other entries.
+    scope: "docs/overnight_tests/"
+    provider: groq
+
+  - id: add-node-engines-field
+    description: >
+      Add an "engines" field to frontend/package.json requiring
+      Node.js >= 22: "engines": {"node": ">=22"}.
+      Also bump @types/node from ^20 to ^22 in devDependencies.
+      Run TypeScript type check to confirm nothing breaks.
+    scope: frontend/
+    provider: groq
+
+  - id: standardize-pytest-version
+    description: >
+      backend/requirements.txt pins pytest>=7.4.0 while
+      api/requirements.txt uses pytest>=8.0.0. Standardize both
+      to pytest>=8.0.0. Run both test suites after.
+    scope: backend/,api/
+    provider: groq
+
+  # ── Data integrity (Claude — needs strong reasoning) ─────
+
+  - id: balance-sheet-identity-check
+    template: pipeline_fix
+    issue: >
+      Add a post-extraction validation function that checks
+      Total Assets == Total Liabilities + Equity for every
+      company after financial data is extracted. Search the
+      codebase for where financial data is stored/committed
+      to the database, and add a validation step there.
+      Log discrepancies with company number, filing date,
+      and the actual values. Do NOT block the pipeline —
+      log warnings and continue. This is a detection step.
+    scope: "backend/pipeline/"
+    provider: claude
+
+  - id: yoy-sanity-check
+    template: pipeline_fix
+    issue: >
+      Add a year-over-year sanity check that flags companies
+      where revenue changes more than 500% between consecutive
+      filings. This likely indicates a parsing error, not real
+      growth. Search for where multi-year financials are stored
+      or compared. Add a warning log and a boolean flag field
+      (e.g. yoy_anomaly) that downstream consumers can filter on.
+    scope: "backend/pipeline/"
+    provider: claude
+
+  - id: dormant-company-handling
+    template: pipeline_fix
+    issue: >
+      Dormant company filings sometimes have empty or missing
+      balance sheet data in XBRL parsing. Search for where
+      XBRL data is parsed (likely stages 01-03 and the lib/
+      directory). Add explicit detection of dormant filings
+      (look for dormant account indicators in the XBRL data)
+      and mark them with a status flag (e.g. is_dormant=True)
+      rather than raising an exception or storing null financials.
+    scope: "backend/pipeline/"
+    provider: claude
+
+  # ── Dashboard loading states (Claude — frontend) ─────────
+
+  - id: dashboard-loading-skeletons
+    template: frontend_component
+    component: >
+      Loading skeleton components for CompanyTable and KPIBar
+      on the dashboard page (frontend/src/app/(app)/dashboard/).
+      The dashboard currently shows a blank screen while data
+      loads from the API. Create skeleton components that match
+      the shape of the real components. Use the existing design
+      patterns in the project. Check for any existing Skeleton
+      or loading components first.
+    provider: claude
+
+  - id: dashboard-empty-state
+    template: frontend_component
+    component: >
+      Empty state for CompanyTable when filters return zero
+      results. Should display a message like "No companies
+      match your current filters" with an icon and a suggestion
+      to adjust filters. Search for existing empty state patterns
+      in the codebase first.
+    provider: claude
+
+  - id: missing-data-display
+    description: >
+      Audit the company detail page (frontend/src/app/(app)/company/)
+      and all financial display components. Anywhere a ratio or
+      financial figure might be null/undefined/NaN, add a graceful
+      fallback that shows "N/A" with a tooltip explaining why the
+      data is unavailable (e.g. "Not reported in latest filing").
+      Search for existing tooltip or Tooltip component usage first.
+      Run typecheck and lint after changes.
+    scope: "frontend/src/"
+    provider: claude

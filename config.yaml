@@ -1,0 +1,118 @@
+# ─────────────────────────────────────────────────
+# Perpetua Task Runner v2 — Configuration
+# ─────────────────────────────────────────────────
+
+# Absolute path to your project root
+workspace: /Users/herbert-johnignacio/Desktop/Project Succession
+
+# Worktree directory (default: sibling to workspace)
+# Each task gets an isolated worktree here — your main workspace stays untouched
+# worktree_root: /Users/herbert-johnignacio/Desktop/.perpetua-worktrees
+
+# ── LLM Provider ─────────────────────────────────
+# Default provider for all tasks (override per-task in tasks.yaml)
+# Options: claude, groq, openai, codex
+provider: claude
+
+# Model override (optional — each provider has a sensible default)
+# claude default: claude-sonnet-4-20250514
+# groq default:   llama-3.3-70b-versatile
+# openai default: gpt-4o
+# codex default:  gpt-5.3-codex
+# model: claude-sonnet-4-20250514
+
+# ── Execution ────────────────────────────────────
+max_turns: 30
+base_branch: main
+
+# ── Test Commands ────────────────────────────────
+# These match your CI pipeline (test.yml)
+test_commands:
+  backend_pytest: "cd backend && python -m pytest -x -q"
+  api_pytest: "cd api && python -m pytest -x -q"
+  frontend_jest: "cd frontend && npx jest --passWithNoTests --silent"
+  frontend_typecheck: "cd frontend && npx tsc --noEmit"
+  frontend_lint: "cd frontend && npx eslint src/ --quiet"
+
+# ── Validation Gates ─────────────────────────────
+# Gates run AFTER the agent's changes, BEFORE commit.
+# If any gate fails, the branch is NOT committed.
+#
+# Types:
+#   command:       pass if exit code == 0
+#   golden_ratio:  extract numeric value, compare to expected ± tolerance
+#
+# Scope: glob pattern — gate only runs if changed files match
+
+gates:
+  # Example: ensure financial ratio logic hasn't drifted
+  # Uncomment and adapt to your actual ratio check scripts
+  #
+  # - name: "Current ratio invariant"
+  #   type: golden_ratio
+  #   command: "cd backend && python -c \"from pipeline.lib.ratios import current_ratio; print(current_ratio())\""
+  #   metric: "([\\d.]+)"
+  #   expected: 1.5
+  #   tolerance: 0.05
+  #   scope: "backend/pipeline/**"
+  #
+  # - name: "Quick ratio invariant"
+  #   type: golden_ratio
+  #   command: "cd backend && python -c \"from pipeline.lib.ratios import quick_ratio; print(quick_ratio())\""
+  #   metric: "([\\d.]+)"
+  #   expected: 1.0
+  #   tolerance: 0.05
+  #   scope: "backend/pipeline/**"
+
+  # Always run: no new lint errors introduced
+  - name: "Frontend lint clean"
+    type: command
+    command: "cd frontend && npx eslint src/ --quiet"
+    scope: "frontend/**"
+
+  # Always run: TypeScript compiles
+  - name: "TypeScript compiles"
+    type: command
+    command: "cd frontend && npx tsc --noEmit"
+    scope: "frontend/**"
+
+# ── Task Templates ───────────────────────────────
+# Define reusable task shapes. Reference with `template:` in tasks.yaml.
+# Use {variable} placeholders that get filled from the task definition.
+
+templates:
+  fix_bug:
+    description: >
+      Find and fix the bug described below. Search for the relevant code,
+      understand the current behavior, make the minimal fix, and run tests.
+      Bug: {bug_description}
+    scope: "{scope}"
+
+  add_error_handling:
+    description: >
+      Add error handling to {target}. Search for the existing patterns
+      in the codebase first. Follow the same error response shape used
+      elsewhere. Run the relevant test suite after changes.
+    scope: "{scope}"
+
+  docs_cleanup:
+    description: >
+      Fix the documentation issue: {issue}.
+      Do not change any code. Do not run tests — this is docs-only.
+    scope: "{scope}"
+
+  frontend_component:
+    description: >
+      Build or fix the frontend component: {component}.
+      Follow existing component patterns in the project.
+      Use TypeScript. Run typecheck and lint after changes.
+    scope: "frontend/src/"
+    provider: claude  # Claude is best for frontend work
+
+  pipeline_fix:
+    description: >
+      Fix the pipeline issue: {issue}.
+      This touches financial data processing — be extra careful.
+      Search for existing patterns. Run backend pytest after changes.
+    scope: "backend/pipeline/"
+    provider: claude  # Financial logic needs the strongest model

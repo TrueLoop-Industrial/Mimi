@@ -1,0 +1,12 @@
+# Core (required)
+anthropic>=0.40.0
+pyyaml>=6.0
+
+# Optional: enable with `pip install -r requirements.txt`
+# Uncomment the providers you want to use
+
+# Groq — fast & cheap for simple tasks (~$0.59/M tokens)
+groq>=0.9.0
+
+# OpenAI / Codex — alternative code generation
+# openai>=1.30.0
