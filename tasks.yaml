@@ -2,7 +2,7 @@
 # Week 1 Tasks — Data Trust & CI Cleanup
 # ─────────────────────────────────────────────────
 # Priority: items that must be right for financial users
-# Groq for cheap tasks, Claude for data/frontend work
+# Mix of quick CI fixes (Groq) and serious data work (Claude)
 
 tasks:
 
@@ -15,15 +15,6 @@ tasks:
       04_exit_score_calibration.md, which has been deleted.
       Remove that reference. Do not change any other entries.
     scope: "docs/overnight_tests/"
-    provider: groq
-
-  - id: add-node-engines-field
-    description: >
-      Add an "engines" field to frontend/package.json requiring
-      Node.js >= 22: "engines": {"node": ">=22"}.
-      Also bump @types/node from ^20 to ^22 in devDependencies.
-      Run TypeScript type check to confirm nothing breaks.
-    scope: frontend/
     provider: groq
 
   - id: standardize-pytest-version
