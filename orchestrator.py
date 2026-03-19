@@ -109,7 +109,7 @@ class TaskOrchestrator:
         # the worktree is branched from main so it reflects what the agent actually sees.
         repo_map_content = build_repo_map(str(workspace_path), scope)
         repo_map_block = f"""## Repo Map
-The following is a structural overview of the codebase. Use it to navigate directly without wasting turns on list_directory calls for directories already shown here.
+The following is a structural overview of the codebase. Use it to navigate directly — do not call list_directory on directories already shown here.
 
 <repo_map>
 {repo_map_content}
@@ -117,8 +117,11 @@ The following is a structural overview of the codebase. Use it to navigate direc
 
 ## Navigation Rules
 - Do NOT call list_directory on directories already visible in the repo map above
-- Start by reading 1-3 likely entrypoint files relevant to your task, then act
-- Minimize exploration turns; your first edit should happen within 10 turns
+- Read the context files listed in the task prompt — they are your entry points, already identified
+- Make your first edit by turn 8. Do not wait until you fully understand every callsite.
+- After reading the context files, use at most 2 additional searches only if a specific gap
+  blocks you from knowing exactly where to write code. Do not search to confirm what you already know.
+- If you are past turn 6 and have not made an edit yet, make one now based on what you know.
 
 """
 
@@ -126,11 +129,10 @@ The following is a structural overview of the codebase. Use it to navigate direc
 Follow these rules exactly.
 
 ## Workflow
-1. READ the relevant code first — use search_codebase and read_file to understand before changing
-2. Make MINIMAL, targeted changes — do not refactor unrelated code
-3. Follow existing patterns and conventions exactly
-4. Run the relevant tests after your changes
-5. Call task_complete with an honest assessment
+1. Read the context files listed in the task prompt — do not search for files that are already provided
+2. Make your first edit. You do not need to understand every callsite before acting.
+3. Run the relevant tests
+4. Fix any failures (up to 3 attempts), then call task_complete
 
 ## Project Context
 {ctx}
