@@ -113,6 +113,7 @@ templates:
     description: >
       Fix the pipeline issue: {issue}.
       This touches financial data processing — be extra careful.
-      Search for existing patterns. Run backend pytest after changes.
+      The context files above are your entry points — start there.
+      Run backend pytest after changes.
     scope: "backend/pipeline/"
     provider: claude  # Financial logic needs the strongest model

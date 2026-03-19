@@ -32,12 +32,12 @@ tasks:
     issue: >
       Add a post-extraction validation function that checks
       Total Assets == Total Liabilities + Equity for every
-      company after financial data is extracted. Search the
-      codebase for where financial data is stored/committed
-      to the database, and add a validation step there.
-      Log discrepancies with company number, filing date,
-      and the actual values. Do NOT block the pipeline —
-      log warnings and continue. This is a detection step.
+      company after financial data is extracted. The context
+      files show where financial data is extracted and audited —
+      add the validation step there. Log discrepancies with
+      company number, filing date, and the actual values.
+      Do NOT block the pipeline — log warnings and continue.
+      This is a detection step.
     scope: "backend/pipeline/"
     provider: claude
     context:
@@ -51,9 +51,10 @@ tasks:
       Add a year-over-year sanity check that flags companies
       where revenue changes more than 500% between consecutive
       filings. This likely indicates a parsing error, not real
-      growth. Search for where multi-year financials are stored
-      or compared. Add a warning log and a boolean flag field
-      (e.g. yoy_anomaly) that downstream consumers can filter on.
+      growth. The context files show where multi-year financials
+      are processed — add the check there. Add a warning log and
+      a boolean flag field (e.g. yoy_anomaly) that downstream
+      consumers can filter on.
     scope: "backend/pipeline/"
     provider: claude
     context:
@@ -65,9 +66,9 @@ tasks:
     template: pipeline_fix
     issue: >
       Dormant company filings sometimes have empty or missing
-      balance sheet data in XBRL parsing. Search for where
-      XBRL data is parsed (likely stages 01-03 and the lib/
-      directory). Add explicit detection of dormant filings
+      balance sheet data in XBRL parsing. The context files
+      point to where XBRL data is parsed and ingested — add
+      detection there. Add explicit detection of dormant filings
       (look for dormant account indicators in the XBRL data)
       and mark them with a status flag (e.g. is_dormant=True)
       rather than raising an exception or storing null financials.
@@ -109,7 +110,7 @@ tasks:
       financial figure might be null/undefined/NaN, add a graceful
       fallback that shows "N/A" with a tooltip explaining why the
       data is unavailable (e.g. "Not reported in latest filing").
-      Search for existing tooltip or Tooltip component usage first.
+      The context files include the Tooltip component — use it directly.
       Run typecheck and lint after changes.
     scope: "frontend/src/"
     provider: claude
