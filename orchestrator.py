@@ -13,12 +13,43 @@ import shutil
 import subprocess
 import sys
 import yaml
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from tools import TOOL_DEFINITIONS, ToolExecutor
 from providers import create_provider, ProviderError
 from gates import GateRunner, GateResult
+from repo_map import build_repo_map
+
+
+@dataclass
+class TaskMetrics:
+    total_turns: int = 0
+    tool_sequence: list[str] = field(default_factory=list)
+    explore_calls: int = 0
+    explore_before_first_edit: int = 0
+    first_read_turn: int | None = None
+    first_edit_turn: int | None = None
+    first_run_turn: int | None = None
+    task_complete_reached: bool = False
+    token_usage: int = 0
+
+    # Internal tracking
+    _first_edit_done: bool = field(default=False, repr=False)
+
+    _ABBREV: dict = field(default_factory=lambda: {
+        "list_directory": "ld",
+        "read_file": "rf",
+        "search_codebase": "sc",
+        "edit_file": "ef",
+        "write_file": "wf",
+        "run_command": "rc",
+        "task_complete": "tc",
+    }, repr=False)
+
+    def compact_sequence(self) -> str:
+        return ", ".join(self._ABBREV.get(t, t) for t in self.tool_sequence)
 
 
 class TaskOrchestrator:
@@ -66,14 +97,32 @@ class TaskOrchestrator:
             return content
         return "(No CLAUDE.md found — read relevant files before making changes.)"
 
-    def _build_system_prompt(self, workspace_path: Path) -> str:
+    def _build_system_prompt(self, workspace_path: Path, scope: str | None = None) -> str:
         ctx = self._load_project_context(workspace_path)
         test_block = ""
         if self.test_commands:
             lines = [f"- {name}: `{cmd}`" for name, cmd in self.test_commands.items()]
             test_block = "## Test Commands\n" + "\n".join(lines)
 
-        return f"""You are a senior software engineer completing a specific task on this codebase.
+        # Build repo map from the worktree, not self.workspace.
+        # The live workspace may be on a different branch with local changes;
+        # the worktree is branched from main so it reflects what the agent actually sees.
+        repo_map_content = build_repo_map(str(workspace_path), scope)
+        repo_map_block = f"""## Repo Map
+The following is a structural overview of the codebase. Use it to navigate directly without wasting turns on list_directory calls for directories already shown here.
+
+<repo_map>
+{repo_map_content}
+</repo_map>
+
+## Navigation Rules
+- Do NOT call list_directory on directories already visible in the repo map above
+- Start by reading 1-3 likely entrypoint files relevant to your task, then act
+- Minimize exploration turns; your first edit should happen within 10 turns
+
+"""
+
+        return f"""{repo_map_block}You are a senior software engineer completing a specific task on this codebase.
 Follow these rules exactly.
 
 ## Workflow
@@ -270,6 +319,9 @@ Follow these rules exactly.
         provider_name = task.get("provider", self.default_provider)
         model_override = task.get("model", self.default_model)
 
+        # Per-task max_turns override
+        task_max_turns = task.get("max_turns", self.max_turns)
+
         print(f"\n{'━' * 60}")
         print(f"  Task:     {task_id}")
         print(f"  Desc:     {description[:80]}{'...' if len(description) > 80 else ''}")
@@ -308,18 +360,26 @@ Follow these rules exactly.
 
         # Build prompt
         scope_hint = f"\n\nFocus area: `{scope}`" if scope else ""
+        context_hint = ""
+        context_paths = task.get("context", [])
+        if context_paths:
+            path_list = "\n".join(f"- {p}" for p in context_paths)
+            context_hint = (
+                f"\n\nBefore starting, read these likely-relevant files first:\n{path_list}"
+            )
         task_prompt = (
-            f"## Task\n{description}{scope_hint}\n\n"
+            f"## Task\n{description}{scope_hint}{context_hint}\n\n"
             "Start by reading the relevant files to understand the current code, "
             "then make the necessary changes. Run tests when done."
         )
 
         messages = [{"role": "user", "content": task_prompt}]
-        system = self._build_system_prompt(worktree_path)
+        system = self._build_system_prompt(worktree_path, scope or None)
         completion_data = None
         turns = 0
+        metrics = TaskMetrics()
 
-        while turns < self.max_turns:
+        while turns < task_max_turns:
             turns += 1
             tool_names = []
 
@@ -331,6 +391,7 @@ Follow these rules exactly.
 
             self.total_tokens["input"] += response.input_tokens
             self.total_tokens["output"] += response.output_tokens
+            metrics.token_usage += response.input_tokens + response.output_tokens
 
             messages.append({"role": "assistant", "content": response.content})
 
@@ -344,8 +405,25 @@ Follow these rules exactly.
                     continue
 
                 tool_names.append(block.name)
+                metrics.tool_sequence.append(block.name)
+
+                # Track first-occurrence turns
+                if block.name == "read_file" and metrics.first_read_turn is None:
+                    metrics.first_read_turn = turns
+                if block.name in ("edit_file", "write_file") and metrics.first_edit_turn is None:
+                    metrics.first_edit_turn = turns
+                    metrics._first_edit_done = True
+                if block.name == "run_command" and metrics.first_run_turn is None:
+                    metrics.first_run_turn = turns
+
+                # Exploration tracking
+                if block.name in ("list_directory", "search_codebase"):
+                    metrics.explore_calls += 1
+                    if not metrics._first_edit_done:
+                        metrics.explore_before_first_edit += 1
 
                 if block.name == "task_complete":
+                    metrics.task_complete_reached = True
                     completion_data = block.input
                     tool_results.append({
                         "type": "tool_result",
@@ -367,6 +445,9 @@ Follow these rules exactly.
 
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
+
+        # Finalize metrics
+        metrics.total_turns = turns
 
         # ── Post-completion: gates, commit, cleanup ──────────
 
@@ -434,6 +515,7 @@ Follow these rules exactly.
                 "gate_report": gate_report,
                 "worktree_path": str(worktree_path) if not gates_passed else "",
                 "baseline_failing": sorted(baseline_failing),
+                "metrics": metrics,
             }
 
             if gates_passed:
@@ -450,6 +532,7 @@ Follow these rules exactly.
                 "turns": turns,
                 "provider": provider_name,
                 "gate_report": [],
+                "metrics": metrics,
             }
             print(f"  ✗ Incomplete after {turns} turns")
 
@@ -496,6 +579,43 @@ Follow these rules exactly.
                 })
 
         return self._generate_review()
+
+    # ── Metrics rendering ─────────────────────────────────────
+
+    def _render_metrics(self, m: TaskMetrics) -> list[str]:
+        """Render a TaskMetrics object as markdown lines for the review report."""
+        lines: list[str] = ["## Metrics", ""]
+        seq = m.compact_sequence()
+        lines.append(f"**Tool sequence:** `{seq}`" if seq else "**Tool sequence:** (none)")
+        lines.append("")
+
+        lines.append(f"| Metric | Value |")
+        lines.append(f"|--------|-------|")
+        lines.append(f"| Total turns | {m.total_turns} |")
+        lines.append(f"| Explore calls (ld + sc) | {m.explore_calls} |")
+        lines.append(f"| Explore before first edit | {m.explore_before_first_edit} |")
+        lines.append(f"| First read turn | {m.first_read_turn if m.first_read_turn is not None else '—'} |")
+        lines.append(f"| First edit turn | {m.first_edit_turn if m.first_edit_turn is not None else '—'} |")
+        lines.append(f"| First run turn | {m.first_run_turn if m.first_run_turn is not None else '—'} |")
+        lines.append(f"| task_complete reached | {'yes' if m.task_complete_reached else 'no'} |")
+        lines.append(f"| Tokens (in+out) | {m.token_usage:,} |")
+        lines.append("")
+
+        warnings: list[str] = []
+        if m.first_edit_turn is not None and m.first_edit_turn > 12:
+            warnings.append(
+                f"⚠️ **Slow to edit:** first edit happened on turn {m.first_edit_turn} (threshold: 12)"
+            )
+        if m.explore_before_first_edit > 5:
+            warnings.append(
+                f"⚠️ **Excessive exploration:** {m.explore_before_first_edit} explore calls before first edit (threshold: 5)"
+            )
+        for w in warnings:
+            lines.append(w)
+        if warnings:
+            lines.append("")
+
+        return lines
 
     # ── Review report ────────────────────────────────────────
 
@@ -587,6 +707,12 @@ Follow these rules exactly.
                 lines.append(f"**Status:** ❌ {r['status']}")
                 if r.get("error"):
                     lines.append(f"**Error:** {r['error']}")
+
+            # Metrics block (all statuses)
+            metrics_obj = r.get("metrics")
+            if metrics_obj is not None:
+                lines.append("")
+                lines.extend(self._render_metrics(metrics_obj))
 
             lines.append("")
             lines.append("---")

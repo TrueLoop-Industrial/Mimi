@@ -26,7 +26,7 @@ def main():
     )
     parser.add_argument("--config", default="config.yaml", help="Config file")
     parser.add_argument("--tasks", default="tasks.yaml", help="Tasks file")
-    parser.add_argument("--task", help="Run a single task by ID")
+    parser.add_argument("--task", action="append", dest="tasks_filter", metavar="TASK_ID", help="Run specific task(s) by ID (repeatable)")
     parser.add_argument("--output", default="reviews/", help="Review output directory")
     parser.add_argument("--dry-run", action="store_true", help="Show tasks without executing")
     parser.add_argument("--cleanup", action="store_true", help="Remove all worktree directories")
@@ -66,10 +66,11 @@ def main():
         print("✗ No tasks defined")
         sys.exit(1)
 
-    if args.task:
-        matched = [t for t in all_tasks if t["id"] == args.task]
-        if not matched:
-            print(f"✗ Task '{args.task}' not found. Available:")
+    if args.tasks_filter:
+        matched = [t for t in all_tasks if t["id"] in args.tasks_filter]
+        missing = [tid for tid in args.tasks_filter if tid not in {t["id"] for t in all_tasks}]
+        if missing:
+            print(f"✗ Task(s) not found: {', '.join(missing)}. Available:")
             for t in all_tasks:
                 print(f"  - {t['id']}")
             sys.exit(1)
@@ -109,8 +110,9 @@ def main():
 
     orchestrator = TaskOrchestrator(str(config_path))
 
-    if args.task:
-        orchestrator.run_task(all_tasks[0])
+    if args.tasks_filter:
+        for task in all_tasks:
+            orchestrator.run_task(task)
         review = orchestrator._generate_review()
     else:
         review = orchestrator.run_batch(str(tasks_path))

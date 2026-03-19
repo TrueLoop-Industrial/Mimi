@@ -40,6 +40,10 @@ tasks:
       log warnings and continue. This is a detection step.
     scope: "backend/pipeline/"
     provider: claude
+    context:
+      - backend/pipeline/07_mine_financials.py
+      - backend/pipeline/lib/uk_ingestor.py
+      - backend/pipeline/12_audit_quality.py
 
   - id: yoy-sanity-check
     template: pipeline_fix
@@ -52,6 +56,10 @@ tasks:
       (e.g. yoy_anomaly) that downstream consumers can filter on.
     scope: "backend/pipeline/"
     provider: claude
+    context:
+      - backend/pipeline/lib/uk_ingestor.py
+      - backend/pipeline/lib/xbrl_parsing.py
+      - backend/pipeline/11_audit_financials.py
 
   - id: dormant-company-handling
     template: pipeline_fix
@@ -65,6 +73,10 @@ tasks:
       rather than raising an exception or storing null financials.
     scope: "backend/pipeline/"
     provider: claude
+    context:
+      - backend/pipeline/lib/uk_ingestor.py
+      - backend/pipeline/10_refresh_financials.py
+      - backend/pipeline/07_mine_financials.py
 
   # ── Dashboard loading states (Claude — frontend) ─────────
 
@@ -101,3 +113,8 @@ tasks:
       Run typecheck and lint after changes.
     scope: "frontend/src/"
     provider: claude
+    context:
+      - frontend/src/app/(app)/company/[id]/page.tsx
+      - frontend/src/components/company/BalanceSheetCard.tsx
+      - frontend/src/components/company/FinancialChart.tsx
+      - frontend/src/components/ui/tooltip.tsx
