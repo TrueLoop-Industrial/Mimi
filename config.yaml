@@ -117,3 +117,27 @@ templates:
       Run backend pytest after changes.
     scope: "backend/pipeline/"
     provider: claude  # Financial logic needs the strongest model
+
+  pipeline_fix_reactive:
+    description: >
+      Pipeline stage {stage} is failing in production on the Perpetua UK company
+      intelligence platform.
+
+      Issue: {issue_description}
+
+      Failure pattern: {failure_pattern}
+
+      Investigate the root cause. Read the stage script and any lib files it uses.
+      Check recent git history for this file. Look at the error pattern described above.
+      Apply a minimal, targeted fix — do not touch unrelated code.
+      Run the relevant tests when done (backend pytest if touching Python).
+    scope: "backend/pipeline/"
+    provider: claude
+
+# ── Mimi Pipeline Watcher ──────────────────────────────────────────────
+watcher:
+  base_url: "http://localhost:3000"
+  admin_secret: "${ADMIN_STATUS_SECRET}"   # reads from env at runtime
+  interval_seconds: 900                    # 15 minutes
+  auto_fix_max_retries: 2                  # escalate to PR after N auto-retries
+  pr_required_threshold: 3                 # consecutive failures before PR

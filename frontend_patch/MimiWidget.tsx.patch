@@ -1,0 +1,135 @@
+--- a/src/components/admin/MimiWidget.tsx
++++ b/src/components/admin/MimiWidget.tsx
+@@ Description @@
+ Add a "Briefing" tab to the MimiWidget that fetches and displays the
+ latest morning briefing markdown from /api/admin/mimi?view=briefing.
+ The tab only appears when there is content to show.
+
+ All changes are additive — no existing logic is modified.
+
+--- CHANGES REQUIRED ---
+
+1. Add 'briefing' to the activeTab state type and default tabs list
+2. Add a fetchBriefing function + briefingContent state
+3. Add the Briefing tab button (only shown when briefing exists)
+4. Add the briefing tab panel content
+
+--- STEP 1: Update imports ---
+
+Add `FileText` to the lucide-react import list:
+
+  import {
+    Bot, ChevronDown, ChevronUp, GitBranch, Loader2, Play,
+    AlertTriangle, CheckCircle, RefreshCw, Zap, Clock, FileText,  // ← add FileText
+  } from 'lucide-react';
+
+
+--- STEP 2: Update state declarations in MimiWidget ---
+
+Change the activeTab type from:
+  const [activeTab, setActiveTab] = useState<'issues' | 'actions'>('issues');
+
+To:
+  const [activeTab, setActiveTab] = useState<'issues' | 'actions' | 'briefing'>('issues');
+
+Add after the activeTab line:
+  const [briefingContent, setBriefingContent] = useState<string | null>(null);
+  const [briefingFilename, setBriefingFilename] = useState<string | null>(null);
+
+
+--- STEP 3: Add fetchBriefing callback ---
+
+Add after the fetchState useCallback:
+
+  const fetchBriefing = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/admin/mimi?secret=${encodeURIComponent(secret)}&view=briefing`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.briefing) {
+          setBriefingContent(data.briefing);
+          setBriefingFilename(data.filename ?? null);
+        }
+      }
+    } catch {
+      // Silent
+    }
+  }, [secret]);
+
+  useEffect(() => {
+    fetchBriefing();
+  }, [fetchBriefing]);
+
+
+--- STEP 4: Update the tabs array ---
+
+Change the tabs mapping from:
+  {(['issues', 'actions'] as const).map((tab) => (
+
+To:
+  {(['issues', 'actions', ...(briefingContent ? ['briefing' as const] : [])] as const).map((tab) => (
+
+And update the tab label display:
+  {tab === 'issues'
+    ? `Active Issues (${activeCount})`
+    : tab === 'actions'
+    ? `Recent Actions (${Math.min(state.recent_actions.length, 10)})`
+    : 'Morning Briefing'}
+
+
+--- STEP 5: Add briefing tab panel ---
+
+After the closing `}` of the `{activeTab === 'actions' && ...}` block, add:
+
+  {/* Briefing tab */}
+  {activeTab === 'briefing' && (
+    <div>
+      {briefingFilename && (
+        <div className="text-[10px] text-[var(--color-text-tertiary)] mb-2 flex items-center gap-1">
+          <FileText size={10} />
+          {briefingFilename}
+        </div>
+      )}
+      {briefingContent ? (
+        <pre className="text-[10px] text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono leading-relaxed max-h-96 overflow-y-auto">
+          {briefingContent}
+        </pre>
+      ) : (
+        <div className="text-xs text-[var(--color-text-tertiary)] flex items-center gap-1.5 py-2">
+          <FileText size={12} /> No briefing available — run overnight.py first
+        </div>
+      )}
+    </div>
+  )}
+
+
+--- COMPLETE CONTEXT FOR MANUAL APPLICATION ---
+
+The relevant section of MimiWidget.tsx to locate each change:
+
+  // Find this line to locate Step 2 (activeTab state):
+  const [activeTab, setActiveTab] = useState<'issues' | 'actions'>('issues');
+
+  // Find this to locate Step 3 (after fetchState):
+  }, [fetchState]);
+
+  // Find this to locate Step 4 (tabs rendering):
+  {(['issues', 'actions'] as const).map((tab) => (
+
+  // Find this to locate Step 5 (after actions tab panel close):
+  {activeTab === 'actions' && (
+    <div>
+      ...
+    </div>
+  )}
+
+  {/* Stats footer */}
+
+
+--- LINT NOTE ---
+
+After applying, run:
+  cd frontend && npm run lint
+
+Expected: 0 errors, 0 warnings.
+The `FileText` import and new state variables are all used, so no unused-import warnings.

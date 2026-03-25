@@ -1,0 +1,222 @@
+--- a/src/app/api/admin/mimi/route.ts
++++ b/src/app/api/admin/mimi/route.ts
+@@ Description @@
+ Add briefing support to the GET handler.
+ When ?view=briefing is passed, read the latest morning briefing markdown
+ from ~/Mimi/reviews/ and return it as plain text.
+
+ Apply after the existing GET handler's try/catch block, before the
+ module-level concurrency guard variables.
+
+--- EXISTING GET HANDLER (excerpt, for context only — do not modify) ---
+
+  export async function GET(request: NextRequest) {
+    const secret = request.nextUrl.searchParams.get('secret');
+    const expected = process.env.ADMIN_STATUS_SECRET;
+    if (!expected || secret !== expected) {
+      return NextResponse.json({ error: 'Not Found' }, { status: 404 });
+    }
+
+    // ── ADD THIS BLOCK at the top of the try block ──
+
+    const view = request.nextUrl.searchParams.get('view');
+    if (view === 'briefing') {
+      // Find the latest morning briefing file
+      const { readdir } = await import('fs/promises');
+      try {
+        const files = await readdir(MIMI_DIR);
+        const briefingFiles = files
+          .filter((f) => f.startsWith('morning_briefing_') && f.endsWith('.md'))
+          .sort()
+          .reverse();
+
+        if (briefingFiles.length === 0) {
+          return NextResponse.json(
+            { briefing: null, message: 'No briefing available — run overnight.py first' },
+            { status: 200 }
+          );
+        }
+
+        const { readFile } = await import('fs/promises');
+        const { join } = await import('path');
+        const content = await readFile(join(MIMI_DIR, 'reviews', briefingFiles[0]), 'utf-8');
+        return NextResponse.json({ briefing: content, filename: briefingFiles[0] });
+      } catch {
+        return NextResponse.json(
+          { briefing: null, message: 'Could not read briefing' },
+          { status: 200 }
+        );
+      }
+    }
+
+    // ── END OF ADDED BLOCK ──
+
+    // (rest of existing GET handler continues here)
+    try {
+      const raw = await readFile(OBSERVATIONS_PATH, 'utf-8');
+      ...
+    }
+  }
+
+--- FULL REPLACEMENT FILE ---
+
+Below is the complete updated route.ts to apply. This is the full file content,
+not a git diff. Copy this content to replace the existing file.
+
+NOTE: Verify the MIMI_DIR constant matches your local path before applying.
+
+```typescript
+import { NextRequest, NextResponse } from 'next/server';
+import { readFile, readdir } from 'fs/promises';
+import { exec } from 'child_process';
+import { join } from 'path';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
+const MIMI_DIR = '/Users/herbert-johnignacio/Mimi';
+const OBSERVATIONS_PATH = join(MIMI_DIR, 'pipeline_observations.json');
+const REVIEWS_DIR = join(MIMI_DIR, 'reviews');
+
+// Module-level concurrency guard — prevent simultaneous watcher runs
+let watcherRunning = false;
+let watcherStartedAt: number | null = null;
+
+// GET /api/admin/mimi?secret=<value>
+// GET /api/admin/mimi?secret=<value>&view=briefing  — returns latest morning briefing
+// Returns structured Mimi observations state
+export async function GET(request: NextRequest) {
+  const secret = request.nextUrl.searchParams.get('secret');
+  const expected = process.env.ADMIN_STATUS_SECRET;
+  if (!expected || secret !== expected) {
+    return NextResponse.json({ error: 'Not Found' }, { status: 404 });
+  }
+
+  // Briefing view — return latest morning briefing markdown
+  const view = request.nextUrl.searchParams.get('view');
+  if (view === 'briefing') {
+    try {
+      const files = await readdir(REVIEWS_DIR);
+      const briefingFiles = files
+        .filter((f) => f.startsWith('morning_briefing_') && f.endsWith('.md'))
+        .sort()
+        .reverse();
+
+      if (briefingFiles.length === 0) {
+        return NextResponse.json({
+          briefing: null,
+          message: 'No briefing available — run overnight.py first',
+        });
+      }
+
+      const content = await readFile(join(REVIEWS_DIR, briefingFiles[0]), 'utf-8');
+      return NextResponse.json({ briefing: content, filename: briefingFiles[0] });
+    } catch {
+      return NextResponse.json({ briefing: null, message: 'Could not read briefing' });
+    }
+  }
+
+  try {
+    const raw = await readFile(OBSERVATIONS_PATH, 'utf-8');
+    const obs = JSON.parse(raw) as {
+      version: number;
+      last_check: string | null;
+      stages: Record<string, {
+        status: string;
+        last_seen_at: string;
+        last_action: string;
+        last_action_at: string;
+        first_seen_at: string;
+        consecutive_failures: number;
+        total_failures: number;
+        resolved_at: string | null;
+        pr_branch: string | null;
+      }>;
+      actions_log: Array<{
+        ts: string;
+        stage: string;
+        action: string;
+        classification: string;
+        reason: string;
+        outcome: string | null;
+      }>;
+    };
+
+    // Active issues: stages without resolved_at
+    const active_issues = Object.entries(obs.stages ?? {})
+      .filter(([, s]) => !s.resolved_at)
+      .map(([stage, s]) => ({
+        stage,
+        classification: s.status,
+        consecutive_failures: s.consecutive_failures ?? 0,
+        total_failures: s.total_failures ?? 0,
+        last_action: s.last_action ?? null,
+        last_action_at: s.last_action_at ?? null,
+        first_seen_at: s.first_seen_at ?? null,
+        pr_branch: s.pr_branch ?? null,
+      }))
+      .sort((a, b) => b.consecutive_failures - a.consecutive_failures);
+
+    // Open PRs
+    const open_prs = active_issues.filter((i) => i.pr_branch);
+
+    // Recent actions (last 10)
+    const recent_actions = (obs.actions_log ?? []).slice(0, 10);
+
+    return NextResponse.json({
+      last_check: obs.last_check ?? null,
+      active_issues,
+      open_prs,
+      recent_actions,
+    });
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return NextResponse.json({
+        last_check: null,
+        active_issues: [],
+        open_prs: [],
+        recent_actions: [],
+        not_started: true,
+      });
+    }
+    return NextResponse.json({ error: 'Failed to read observations' }, { status: 500 });
+  }
+}
+
+// POST /api/admin/mimi?secret=<value>
+// Triggers a single pipeline_watcher.py --once run in the background
+export async function POST(request: NextRequest) {
+  const secret = request.nextUrl.searchParams.get('secret');
+  const expected = process.env.ADMIN_STATUS_SECRET;
+  if (!expected || secret !== expected) {
+    return NextResponse.json({ error: 'Not Found' }, { status: 404 });
+  }
+
+  // Prevent concurrent watcher invocations (stale guard: reset after 10 min)
+  const now = Date.now();
+  if (watcherRunning && watcherStartedAt && now - watcherStartedAt < 600_000) {
+    return NextResponse.json(
+      { status: 'already_running', message: 'Mimi check already in progress' },
+      { status: 409 }
+    );
+  }
+
+  const watcherScript = join(MIMI_DIR, 'pipeline_watcher.py');
+
+  watcherRunning = true;
+  watcherStartedAt = now;
+
+  execAsync(`python3 "${watcherScript}" --once`, {
+    cwd: MIMI_DIR,
+    timeout: 300_000,
+  })
+    .catch(() => {
+      // Background process — log suppressed to keep the response fast
+    })
+    .finally(() => {
+      watcherRunning = false;
+    });
+
+  return NextResponse.json({ status: 'queued', message: 'Mimi check triggered' });
+}
+```
