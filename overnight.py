@@ -27,6 +27,36 @@ import yaml
 
 # ── Paths ──────────────────────────────────────────────────────────────
 
+# Load .env early — before any other module reads os.environ.
+# Called at module import time so subprocesses inherit the values.
+def _load_dotenv_file() -> None:
+    """
+    Load ~/Mimi/.env into os.environ without requiring python-dotenv.
+    Handles both `KEY=value` and `export KEY=value` forms.
+    Never overwrites vars already set in the environment.
+    """
+    env_file = Path(__file__).parent / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Strip optional leading 'export '
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+_load_dotenv_file()
+
+
+
 MIMI_DIR = Path(__file__).parent
 WORKSPACE = Path("/Users/herbert-johnignacio/Desktop/Project Succession")
 OBSERVATIONS_FILE = MIMI_DIR / "pipeline_observations.json"
@@ -376,15 +406,13 @@ def run_observe(config: dict, dry_run: bool = False) -> dict:
     Run the observation loop. Returns a summary dict for the briefing.
 
     Steps:
-    1. Run watcher cycle (pipeline_watcher.py --once)
-    2. Read resulting observations
+    1. Run pipeline_watcher.py --once (handles its own auth + status fetch)
+    2. Read resulting observations; compare last_check before/after to
+       determine if the server was reachable
     3. For REGRESSION/NEW with consecutive_failures > THRESHOLD:
        find relevant code, log suggested fix — do NOT attempt fix
     4. Return summary for briefing generation
     """
-    base_url = config["watcher"]["base_url"]
-    secret = config["watcher"]["admin_secret"]
-
     summary: dict = {
         "mode": "observe",
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -398,31 +426,40 @@ def run_observe(config: dict, dry_run: bool = False) -> dict:
         "error": None,
     }
 
-    # Step 1: Fetch status to check server reachability
     if dry_run:
-        log.info("[DRY RUN] Would fetch pipeline status and run watcher cycle")
+        log.info("[DRY RUN] Would run pipeline_watcher.py --once")
         summary["server_reachable"] = True
         summary["watcher_ran"] = True
         return summary
 
-    status = fetch_pipeline_status(base_url, secret)
-    if status is None:
-        summary["error"] = (
-            "Could not reach pipeline — server may be offline or "
-            "ADMIN_STATUS_SECRET is not set in the environment"
-        )
-        summary["server_reachable"] = False
-        return summary
+    # Snapshot last_check before the watcher run so we can detect if
+    # the watcher successfully contacted the server (it updates last_check).
+    obs_before = load_observations()
+    last_check_before = obs_before.get("last_check")
 
-    summary["server_reachable"] = True
-
-    # Step 2: Run the full watcher cycle (classify, act, update observations)
+    # Step 1: Run the full watcher cycle (fetches status, classifies, acts)
     watcher_ok = run_watcher_cycle(config)
     summary["watcher_ran"] = watcher_ok
     summary["api_call_count"] += 1  # The classifier uses one Claude call
 
-    # Step 3: Read post-watcher observations
-    observations = load_observations()
+    # Step 2: Read post-watcher observations
+    observations_after = load_observations()
+    last_check_after = observations_after.get("last_check")
+
+    # If last_check advanced, the watcher successfully reached the server
+    server_reached = (
+        last_check_after is not None and last_check_after != last_check_before
+    )
+    summary["server_reachable"] = server_reached
+
+    if not server_reached:
+        summary["error"] = (
+            "Could not reach pipeline — server may be offline or "
+            "ADMIN_STATUS_SECRET is not set correctly"
+        )
+
+    # Step 3: Use observations already loaded after watcher run
+    observations = observations_after
     stages = observations.get("stages", {})
 
     active_issues = [
