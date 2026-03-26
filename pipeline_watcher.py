@@ -26,16 +26,28 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 
-import requests
+import httpx
 import yaml
 
 # ── Paths ──────────────────────────────────────────────────────────────
 
 MIMI_DIR = Path(__file__).parent
-WORKSPACE = Path("/Users/herbert-johnignacio/Desktop/Project Succession")
 OBSERVATIONS_FILE = MIMI_DIR / "pipeline_observations.json"
 CONFIG_FILE = MIMI_DIR / "config.yaml"
+
+
+def _configured_workspace() -> Path:
+    try:
+        config = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+    except FileNotFoundError:
+        return Path.cwd()
+    workspace = config.get("workspace")
+    return Path(workspace).expanduser() if workspace else Path.cwd()
+
+
+WORKSPACE = _configured_workspace()
 
 # ── Logging ────────────────────────────────────────────────────────────
 
@@ -47,12 +59,39 @@ logging.basicConfig(
 log = logging.getLogger("mimi.watcher")
 
 
+# ── Skill return types ─────────────────────────────────────────────────
+
+class AutoRetryResult(TypedDict):
+    success: bool
+    outcome: str
+    escalated: bool
+
+
+class DraftFixResult(TypedDict):
+    branch: str
+    success: bool
+    error: str | None
+
+
+class PrOutcome(TypedDict):
+    stage: str
+    pr_branch: str
+    opened_at: str
+    merged: bool | None
+    required_edits: bool | None
+    closed_at: str | None
+    notes: str | None
+
+
 # ── Observations state ─────────────────────────────────────────────────
 
 def load_observations() -> dict:
     if OBSERVATIONS_FILE.exists():
-        return json.loads(OBSERVATIONS_FILE.read_text())
-    return {"version": 1, "last_check": None, "stages": {}, "actions_log": []}
+        obs = json.loads(OBSERVATIONS_FILE.read_text())
+        if "pr_outcomes" not in obs:
+            obs["pr_outcomes"] = []
+        return obs
+    return {"version": 1, "last_check": None, "stages": {}, "actions_log": [], "pr_outcomes": []}
 
 
 def save_observations(obs: dict) -> None:
@@ -115,11 +154,45 @@ def mark_resolved(obs: dict, stage: str) -> None:
         obs["stages"][stage]["pr_branch"] = None
 
 
+def record_pr_outcome(
+    obs: dict,
+    stage: str,
+    pr_branch: str,
+    merged: bool | None = None,
+    required_edits: bool | None = None,
+    notes: str | None = None,
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    outcomes: list = obs.setdefault("pr_outcomes", [])
+
+    for entry in outcomes:
+        if entry["pr_branch"] == pr_branch:
+            entry["merged"] = merged
+            entry["required_edits"] = required_edits
+            entry["notes"] = notes
+            if merged is not None:
+                entry["closed_at"] = now
+            return
+
+    outcomes.append({
+        "stage": stage,
+        "pr_branch": pr_branch,
+        "opened_at": now,
+        "merged": merged,
+        "required_edits": required_edits,
+        "closed_at": None,
+        "notes": notes,
+    })
+
+    if len(outcomes) > 50:
+        obs["pr_outcomes"] = outcomes[-50:]
+
+
 # ── Status fetch ───────────────────────────────────────────────────────
 
 def fetch_status(base_url: str, secret: str) -> dict:
     url = f"{base_url.rstrip('/')}/api/admin/status?secret={secret}"
-    resp = requests.get(url, timeout=30)
+    resp = httpx.get(url, timeout=30.0, follow_redirects=True)
     resp.raise_for_status()
     return resp.json()
 
@@ -129,9 +202,9 @@ def fetch_status(base_url: str, secret: str) -> dict:
 def _post(base_url: str, secret: str, path: str, body: dict, timeout: int = 30) -> bool:
     url = f"{base_url.rstrip('/')}{path}?secret={secret}"
     try:
-        resp = requests.post(url, json=body, timeout=timeout)
-        return resp.ok
-    except Exception as exc:
+        resp = httpx.post(url, json=body, timeout=float(timeout), follow_redirects=True)
+        return resp.is_success
+    except httpx.HTTPError as exc:
         log.warning(f"POST {path} failed: {exc}")
         return False
 
@@ -160,13 +233,44 @@ def action_pause_jobs(base_url: str, secret: str, job_ids: list[str]) -> bool:
     )
 
 
+# ── Skill functions ────────────────────────────────────────────────────
+
+def auto_retry_stage(stage: str, config: dict, observations: dict) -> AutoRetryResult:
+    """
+    Re-run a failed pipeline stage via the admin API.
+    Checks auto_retried_count against max_auto_retries before triggering.
+    If max retries reached, returns escalated=True for pr-required handling.
+    """
+    watcher_cfg = config["watcher"]
+    base_url: str = watcher_cfg["base_url"]
+    secret: str = watcher_cfg["admin_secret"]
+    max_auto_retries: int = watcher_cfg.get("auto_fix_max_retries", 2)
+
+    stage_obs = observations["stages"].get(stage, {})
+    retries = stage_obs.get("auto_retried_count", 0)
+
+    if retries >= max_auto_retries:
+        log.warning(f"    Max auto-retries ({max_auto_retries}) reached for {stage} — escalating to pr-required")
+        return {"success": False, "outcome": "max_retries_reached", "escalated": True}
+
+    ok = action_run_stage(base_url, secret, stage)
+    if ok:
+        observations["stages"].setdefault(stage, {})
+        observations["stages"][stage]["auto_retried_count"] = retries + 1
+        log.info(f"    run-stage → triggered")
+        return {"success": True, "outcome": "triggered", "escalated": False}
+
+    log.warning(f"    run-stage → failed")
+    return {"success": False, "outcome": "failed", "escalated": False}
+
+
 # ── Mimi orchestrator dispatch ─────────────────────────────────────────
 
-def dispatch_to_mimi(result: dict) -> str:
+def draft_fix(issue: dict, config: dict) -> DraftFixResult:
     """
-    Dispatch a pr-required issue to Mimi's TaskOrchestrator.
-    Creates an isolated worktree, runs Claude agent, returns branch name.
-    Returns empty string on failure.
+    Dispatch a pr-required issue to Mimi's TaskOrchestrator using the
+    pipeline_fix_reactive template. Retries once on failure.
+    Returns DraftFixResult with branch, success, and error.
     """
     mimi_dir = str(MIMI_DIR)
     if mimi_dir not in sys.path:
@@ -181,39 +285,96 @@ def dispatch_to_mimi(result: dict) -> str:
         TaskOrchestrator = mod.TaskOrchestrator
     except Exception as exc:
         log.error(f"Could not load orchestrator: {exc}")
-        return ""
+        return {"branch": "", "success": False, "error": str(exc)}
 
-    stage = result["stage"]
+    stage = issue["stage"]
     safe = stage.replace("_", "-")
     ts = datetime.now(timezone.utc).strftime("%m%d%H%M")
     task_id = f"mimi-fix-{safe}-{ts}"
 
-    description = result.get("pr_description") or (
-        f"Pipeline stage {stage} has been failing. "
-        f"Investigate the root cause and apply a minimal fix. "
-        f"Read the stage script, check git history, look at the error pattern."
-    )
-
     task = {
         "id": task_id,
-        "description": description,
+        "template": "pipeline_fix_reactive",
+        "stage": stage,
+        "issue_description": issue.get("reason", ""),
+        "failure_pattern": issue.get("pr_description", f"Pipeline stage {stage} has been failing repeatedly."),
         "provider": "claude",
         "scope": "backend/pipeline/",
-        "context_files": [
+        "context": [
             f"backend/pipeline/{stage.split('_')[0]}*.py",
             "backend/pipeline/lib/uk_ingestor.py",
         ],
     }
 
-    try:
-        orch = TaskOrchestrator(str(CONFIG_FILE))
-        task_result = orch.run_task(task)
-        branch = task_result.get("branch", "")
-        log.info(f"    Orchestrator finished — branch: {branch or '(none)'}")
-        return branch
-    except Exception as exc:
-        log.error(f"Orchestrator dispatch failed: {exc}")
-        return ""
+    max_attempts = 2
+    last_error: str | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            orch = TaskOrchestrator(str(CONFIG_FILE))
+            task_result = orch.run_task(task)
+            branch = task_result.get("branch", "")
+            if branch:
+                log.info(f"    Orchestrator finished — branch: {branch}")
+                return {"branch": branch, "success": True, "error": None}
+            last_error = "orchestrator returned empty branch"
+            log.warning(
+                f"    Attempt {attempt}: empty branch — "
+                f"{'retrying' if attempt < max_attempts else 'giving up'}"
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            log.warning(
+                f"    Attempt {attempt}: orchestrator error: {exc} — "
+                f"{'retrying' if attempt < max_attempts else 'giving up'}"
+            )
+
+    log.error(f"Orchestrator dispatch failed after {max_attempts} attempts: {last_error}")
+    return {"branch": "", "success": False, "error": last_error}
+
+
+def dispatch_to_mimi(result: dict) -> str:
+    """Thin alias for backward compatibility. Calls draft_fix() and returns branch string."""
+    with open(CONFIG_FILE) as f:
+        cfg = yaml.safe_load(f)
+    fix_result = draft_fix(result, cfg)
+    return fix_result["branch"]
+
+
+# ── Self-heal detection ─────────────────────────────────────────────────
+
+def _resolve_self_healed(status: dict, observations: dict) -> list[str]:
+    """Auto-resolve stages whose most recent run succeeded after prior failures.
+
+    Runs before Claude classification so self-healed stages never reach the
+    classifier — avoids false ONGOING alerts after a fix lands.
+
+    The admin/status endpoint returns recent_runs ordered desc by start_time,
+    so runs[0] is always the latest.
+    """
+    recent_runs: list[dict] = status.get("recent_runs", [])
+    by_stage: dict[str, list[dict]] = {}
+    for run in recent_runs:
+        stage = run.get("workflow_name", "")
+        by_stage.setdefault(stage, []).append(run)
+
+    resolved: list[str] = []
+    for stage, obs_data in list(observations.get("stages", {}).items()):
+        if obs_data.get("resolved_at"):
+            continue  # Already resolved
+        runs = by_stage.get(stage, [])
+        if not runs:
+            continue
+        latest = runs[0]  # Most recent run (desc order)
+        if latest.get("execution_status") == "success":
+            mark_resolved(observations, stage)
+            resolved.append(stage)
+            log.info(
+                f"  {stage}: self-healed — latest run succeeded "
+                f"({latest.get('total_companies_processed', 0):,} processed, "
+                f"0 errors) — auto-resolved"
+            )
+    return resolved
 
 
 # ── Main check ─────────────────────────────────────────────────────────
@@ -225,7 +386,6 @@ def run_check(config: dict) -> None:
     watcher_cfg = config["watcher"]
     base_url: str = watcher_cfg["base_url"]
     secret: str = watcher_cfg["admin_secret"]
-    max_auto_retries: int = watcher_cfg.get("auto_fix_max_retries", 2)
 
     log.info("Fetching status snapshot...")
     try:
@@ -236,6 +396,11 @@ def run_check(config: dict) -> None:
 
     observations = load_observations()
     observations["last_check"] = datetime.now(timezone.utc).isoformat()
+
+    # Self-heal pass: resolve stages whose latest run succeeded without calling Claude
+    healed = _resolve_self_healed(status, observations)
+    if healed:
+        log.info(f"Self-healed: {', '.join(healed)}")
 
     log.info("Enriching issues...")
     issues = enrich_issues(status, observations)
@@ -269,18 +434,10 @@ def run_check(config: dict) -> None:
         log.info(f"    reason: {reason}")
 
         if action == "auto-fix":
-            stage_obs = observations["stages"].get(stage, {})
-            retries = stage_obs.get("auto_retried_count", 0)
-            if retries >= max_auto_retries:
-                log.warning(f"    Max auto-retries ({max_auto_retries}) reached — escalating to pr-required")
+            retry_result = auto_retry_stage(stage, config, observations)
+            outcome = retry_result["outcome"]
+            if retry_result["escalated"]:
                 action = "pr-required"
-            else:
-                ok = action_run_stage(base_url, secret, stage)
-                outcome = "triggered" if ok else "failed"
-                log.info(f"    run-stage → {outcome}")
-                if ok:
-                    observations["stages"].setdefault(stage, {})
-                    observations["stages"][stage]["auto_retried_count"] = retries + 1
 
         if action == "auto-cancel":
             ok = action_cancel_stage(base_url, secret, stage)
@@ -295,8 +452,11 @@ def run_check(config: dict) -> None:
                 outcome = f"existing_pr:{existing_branch}"
             else:
                 log.info(f"    Dispatching to Mimi orchestrator...")
-                pr_branch = dispatch_to_mimi(result)
-                outcome = f"branch:{pr_branch}" if pr_branch else "dispatch_failed"
+                fix_result = draft_fix(result, config)
+                pr_branch = fix_result["branch"] if fix_result["success"] else None
+                outcome = f"branch:{fix_result['branch']}" if fix_result["success"] else f"dispatch_failed:{fix_result['error']}"
+                if fix_result["success"]:
+                    record_pr_outcome(observations, stage, fix_result["branch"])
 
         if action in ("suppress", "monitor"):
             log.info(f"    No action taken ({action})")
@@ -368,10 +528,27 @@ def main() -> None:
         "--interval", type=int, default=None,
         help="Poll interval in seconds (overrides config)"
     )
+    parser.add_argument("--pr-outcome", metavar="STAGE", help="Record a PR outcome for a stage")
+    parser.add_argument("--branch", help="PR branch name (required with --pr-outcome)")
+    parser.add_argument("--merged", action="store_true", help="Mark PR as merged")
+    parser.add_argument("--closed", action="store_true", help="Mark PR as closed without merge")
+    parser.add_argument("--edits-required", action="store_true", help="Mark that edits were required")
+    parser.add_argument("--notes", help="Optional notes about the PR outcome")
     args = parser.parse_args()
 
     if args.status:
         show_status()
+        return
+
+    if args.pr_outcome:
+        if not args.branch:
+            parser.error("--branch is required when using --pr-outcome")
+        obs = load_observations()
+        merged: bool | None = True if args.merged else (False if args.closed else None)
+        record_pr_outcome(obs, args.pr_outcome, args.branch, merged, args.edits_required or None, args.notes)
+        save_observations(obs)
+        status_str = "merged" if args.merged else ("closed" if args.closed else "pending")
+        print(f"Recorded outcome for {args.pr_outcome} / {args.branch}: {status_str}")
         return
 
     with open(CONFIG_FILE) as f:

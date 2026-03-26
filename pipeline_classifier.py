@@ -11,11 +11,25 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 import anthropic
+import yaml
 
-WORKSPACE = "/Users/herbert-johnignacio/Desktop/Project Succession"
+MIMI_DIR = Path(__file__).parent
+CONFIG_FILE = MIMI_DIR / "config.yaml"
+
+
+def _load_workspace() -> str:
+    config = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+    workspace = config.get("workspace")
+    if not workspace:
+        raise ValueError("Missing workspace in config.yaml")
+    return str(Path(workspace).expanduser())
+
+
+WORKSPACE = _load_workspace()
 PIPELINE_DIR = os.path.join(WORKSPACE, "backend", "pipeline")
 
 # Module-level singleton — avoid re-initialising the client on every call
@@ -49,6 +63,12 @@ STAGE_FILES: dict[str, str] = {
 }
 
 TERMINAL_STATUSES = {"failed", "partial", "stale", "cancelled"}
+
+import re as _re
+
+_SCHEMA_MISMATCH_RE = _re.compile(
+    r'column "([^"]+)" of relation "([^"]+)" does not exist', _re.IGNORECASE
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -103,6 +123,28 @@ def _error_hash(runs: list[dict]) -> str:
     return f"{failed[0].get('workflow_name', '')}:{total_errors}"
 
 
+def _fingerprint_error(runs: list[dict]) -> dict:
+    """Extract structured error metadata from recent failed runs.
+
+    Reads the `first_error` field added by the admin/status API.
+    Currently detects schema_mismatch (missing DB column) so Claude
+    knows to write a migration rather than a code fix.
+    """
+    for run in runs:
+        first_error: str = run.get("first_error") or ""
+        if not first_error:
+            continue
+        m = _SCHEMA_MISMATCH_RE.search(first_error)
+        if m:
+            return {
+                "error_type": "schema_mismatch",
+                "missing_column": m.group(1),
+                "affected_table": m.group(2),
+                "raw": first_error[:200],
+            }
+    return {}
+
+
 # ── Enrichment ─────────────────────────────────────────────────────────
 
 def enrich_issues(status: dict, observations: dict) -> list[dict]:
@@ -121,6 +163,12 @@ def enrich_issues(status: dict, observations: dict) -> list[dict]:
         by_stage.setdefault(stage, []).append(run)
 
     for stage, runs in by_stage.items():
+        # Skip self-healed: if the most recent run succeeded, the stage is healthy.
+        # _resolve_self_healed in the watcher already marks these resolved, but
+        # this guard ensures they never reach Claude even if called standalone.
+        if runs and runs[0].get("execution_status") == "success":
+            continue
+
         failed = [r for r in runs if r.get("execution_status") in TERMINAL_STATUSES]
         if not failed:
             continue
@@ -140,6 +188,7 @@ def enrich_issues(status: dict, observations: dict) -> list[dict]:
             "pr_branch": obs.get("pr_branch"),
             "last_error_hash": obs.get("last_error_hash", ""),
             "current_error_hash": _error_hash(runs),
+            "error_fingerprint": _fingerprint_error(runs),
             "source_snippet": _stage_source(code),
             "git_log": _git_log(code),
         })
@@ -196,11 +245,20 @@ For each issue classify:
 - auto-fix: safe to trigger via API. Criteria: failed once or twice, last \
   success < 48h ago, error count reasonable, no structural change needed
 - auto-cancel: stage is stuck (running > 30 min)
-- pr-required: needs code investigation. Criteria: 3+ consecutive failures, \
-  never-seen error pattern, data integrity risk, touches fragile files \
-  (xbrl_parsing.py, uk_ingestor.py)
+- pr-required: needs code or schema investigation. Criteria: 3+ consecutive \
+  failures, never-seen error pattern, data integrity risk, touches fragile \
+  files (xbrl_parsing.py, uk_ingestor.py)
 - suppress: ONGOING and PR already open, or issue not actionable
 - monitor: watch another cycle before acting
+
+**schema_mismatch handling** — if an issue has \
+`"error_fingerprint": {"error_type": "schema_mismatch"}`:
+- action MUST be `pr-required` (not auto-fix — retrying will always fail)
+- risk is always `high` (seeding stages blocked = entire pipeline stalled)
+- pr_description MUST say: "Write a migration file in /migrations/ to add \
+  column `<missing_column>` to `<affected_table>`. Check the highest-numbered \
+  existing migration for naming convention and column type. Do not alter \
+  application code — the column name in uk_ingestor.py is correct."
 
 **risk** — low | medium | high
 
