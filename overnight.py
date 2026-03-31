@@ -58,10 +58,20 @@ _load_dotenv_file()
 
 
 MIMI_DIR = Path(__file__).parent
-WORKSPACE = Path("/Users/herbert-johnignacio/Desktop/Project Succession")
 OBSERVATIONS_FILE = MIMI_DIR / "pipeline_observations.json"
 CONFIG_FILE = MIMI_DIR / "config.yaml"
 REVIEWS_DIR = MIMI_DIR / "reviews"
+
+
+def _configured_workspace() -> Path:
+    config = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+    workspace = config.get("workspace")
+    if not workspace:
+        raise ValueError("Missing workspace in config.yaml")
+    return Path(workspace).expanduser()
+
+
+WORKSPACE = _configured_workspace()
 
 # ── Logging ────────────────────────────────────────────────────────────
 
@@ -83,6 +93,14 @@ DEEP_OBSERVE_THRESHOLD = 2
 # Claude API pricing (per million tokens, as of 2026-03)
 SONNET_INPUT_COST_PER_M = 3.0
 SONNET_OUTPUT_COST_PER_M = 15.0
+
+# Conservative token estimate per fix-mode dispatch (30-turn agent session)
+FIX_ESTIMATED_INPUT_TOKENS = 50_000
+FIX_ESTIMATED_OUTPUT_TOKENS = 20_000
+FIX_COST_PER_DISPATCH = (
+    FIX_ESTIMATED_INPUT_TOKENS / 1_000_000 * SONNET_INPUT_COST_PER_M
+    + FIX_ESTIMATED_OUTPUT_TOKENS / 1_000_000 * SONNET_OUTPUT_COST_PER_M
+)
 
 
 # ── Config loading ─────────────────────────────────────────────────────
@@ -114,21 +132,21 @@ def fetch_pipeline_status(base_url: str, secret: str) -> Optional[dict]:
     Fetch the admin status snapshot. Returns None on connection failure.
     Logs the error clearly without crashing.
     """
-    import requests  # type: ignore[import]
+    import httpx
     url = f"{base_url.rstrip('/')}/api/admin/status?secret={secret}"
     try:
-        resp = requests.get(url, timeout=30)
+        resp = httpx.get(url, timeout=30.0, follow_redirects=True)
         resp.raise_for_status()
         return resp.json()
-    except requests.exceptions.ConnectionError as exc:
+    except httpx.ConnectError as exc:
         log.error(f"Could not reach pipeline server: {exc}")
         log.error("Is the Next.js server running? (npm run dev on port 3000)")
         return None
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         log.error("Pipeline status request timed out after 30s")
         return None
-    except requests.exceptions.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
             log.error(
                 "Pipeline status returned 404 — ADMIN_STATUS_SECRET may not be set "
                 "in the environment. Set it with: "
@@ -247,41 +265,52 @@ def generate_fix_suggestion(
 ) -> str:
     """
     Generate a plain-text fix suggestion without calling an LLM.
-    Used in observe mode — a heuristic best-effort approach.
+    Used in observe mode. Uses the actual last classifier reason and git context
+    rather than generic boilerplate.
     """
     lines = [
         f"Stage: {issue['stage']}",
         f"Classification: {classification}",
         f"Consecutive failures: {consecutive_failures}",
-        "",
     ]
+
+    last_reason = issue.get("last_reason", "")
+    if last_reason:
+        lines.append(f"Last classifier reason: {last_reason}")
+
+    lines.append("")
 
     if context.get("file_path"):
         lines.append(f"Primary file: {context['file_path']}")
     if context.get("git_log"):
         lines.append(f"Recent commits:\n{context['git_log']}")
 
-    # Heuristic suggestions based on classification
+    lines.append("")
+
     if classification == "REGRESSION":
         lines.append(
-            "\nSuggested approach: This stage was working before — check recent "
-            "git commits to this file for the likely regression. Compare the "
-            "current error pattern to what was working previously."
+            "Suggested approach: This stage was working before — the git commits "
+            "above are the most likely source. Start with the most recent commit "
+            "touching this file and check whether it introduced the failure."
         )
     elif classification == "NEW":
         lines.append(
-            "\nSuggested approach: First occurrence — read the stage script and "
-            "check if external dependencies (Companies House API, XBRL feeds) "
-            "have changed. Look at the error type: connection error vs. parsing "
-            "error vs. data quality issue will each point to different fixes."
+            "Suggested approach: First occurrence — check if external dependencies "
+            "(Companies House API, XBRL feeds) have changed, or if the error "
+            "matches a schema, data type, or rate-limit issue."
         )
     else:  # ONGOING
-        lines.append(
-            "\nSuggested approach: Issue persists despite prior action. If an "
-            "auto-fix was attempted, check whether the retry actually ran. "
-            "If a PR exists, check if it was merged. Consider whether the "
-            "underlying data source has changed."
-        )
+        if last_reason:
+            lines.append(
+                f"Suggested approach: Issue persists. Prior assessment was: "
+                f'"{last_reason}" — verify whether the action taken actually ran '
+                f"and whether a PR branch is waiting to be merged."
+            )
+        else:
+            lines.append(
+                "Suggested approach: Issue persists despite prior action. "
+                "Verify auto-fix ran successfully and check for an open PR branch."
+            )
 
     return "\n".join(lines)
 
@@ -427,9 +456,61 @@ def run_observe(config: dict, dry_run: bool = False) -> dict:
     }
 
     if dry_run:
-        log.info("[DRY RUN] Would run pipeline_watcher.py --once")
-        summary["server_reachable"] = True
-        summary["watcher_ran"] = True
+        log.info("[DRY RUN] Would run pipeline_watcher.py --once (simulated)")
+        summary["server_reachable"] = True   # simulated
+        summary["watcher_ran"] = True         # simulated
+        # Load existing observations from disk instead of running the watcher
+        observations = load_observations()
+        stages = observations.get("stages", {})
+        active_issues = [
+            {"stage": stage, "data": data}
+            for stage, data in stages.items()
+            if not data.get("resolved_at")
+        ]
+        summary["active_issues"] = active_issues
+
+        investigated = []
+        for item in active_issues:
+            stage = item["stage"]
+            data = item["data"]
+            classification = data.get("status", "UNKNOWN")
+            consecutive_failures = data.get("consecutive_failures", 0)
+
+            if classification not in ("REGRESSION", "NEW"):
+                continue
+            if consecutive_failures <= DEEP_OBSERVE_THRESHOLD:
+                continue
+
+            log.info(
+                f"  [DRY RUN] Investigating {stage} ({classification}, "
+                f"{consecutive_failures}× consecutive failures)..."
+            )
+
+            context = find_code_context_for_stage(stage)
+            last_reason = next(
+                (e.get("reason", "") for e in observations.get("actions_log", [])
+                 if e.get("stage") == stage),
+                "",
+            )
+            suggestion = generate_fix_suggestion(
+                {"stage": stage, "last_reason": last_reason},
+                context,
+                classification,
+                consecutive_failures,
+            )
+
+            investigated.append({
+                "stage": stage,
+                "classification": classification,
+                "consecutive_failures": consecutive_failures,
+                "last_action": data.get("last_action"),
+                "pr_branch": data.get("pr_branch"),
+                "context": context,
+                "suggestion": suggestion,
+            })
+
+        summary["investigated_issues"] = investigated
+        summary["completed_at"] = datetime.now(timezone.utc).isoformat()
         return summary
 
     # Snapshot last_check before the watcher run so we can detect if
@@ -489,8 +570,13 @@ def run_observe(config: dict, dry_run: bool = False) -> dict:
         )
 
         context = find_code_context_for_stage(stage)
+        last_reason = next(
+            (e.get("reason", "") for e in observations.get("actions_log", [])
+             if e.get("stage") == stage),
+            "",
+        )
         suggestion = generate_fix_suggestion(
-            {"stage": stage},
+            {"stage": stage, "last_reason": last_reason},
             context,
             classification,
             consecutive_failures,
@@ -514,7 +600,7 @@ def run_observe(config: dict, dry_run: bool = False) -> dict:
 
 # ── Main fix loop ──────────────────────────────────────────────────────
 
-def run_fix(config: dict, dry_run: bool = False) -> dict:
+def run_fix(config: dict, dry_run: bool = False, target_stage: Optional[str] = None) -> dict:
     """
     Run the observation + fix loop.
 
@@ -530,9 +616,64 @@ def run_fix(config: dict, dry_run: bool = False) -> dict:
     summary["mode"] = "fix"
     summary["fix_attempts"] = 0
     summary["fix_results"] = []
+    summary["budget_exceeded"] = False
+    summary["estimated_cost_usd"] = 0.0
 
     if dry_run:
-        log.info("[DRY RUN] Would attempt fixes in Task Runner")
+        log.info("[DRY RUN] Building fix candidates from existing observations ...")
+        observations = load_observations()
+        stages = observations.get("stages", {})
+        action_log = observations.get("actions_log", [])
+        dry_candidates: list[dict] = []
+        seen_stages: set[str] = set()
+        for entry in action_log[:20]:
+            stage = entry.get("stage", "")
+            action = entry.get("action", "")
+            if action == "pr-required" and stage not in seen_stages:
+                stage_data = stages.get(stage, {})
+                if not stage_data.get("resolved_at") and not stage_data.get("pr_branch"):
+                    dry_candidates.append({
+                        "stage": stage,
+                        "classification": entry.get("classification", "UNKNOWN"),
+                        "reason": entry.get("reason", ""),
+                        "pr_description": None,
+                    })
+                    seen_stages.add(stage)
+
+        if target_stage:
+            dry_candidates = [c for c in dry_candidates if c["stage"] == target_stage]
+
+        log.info(
+            f"[DRY RUN] Fix candidates: {len(dry_candidates)} (max: {MAX_FIX_ATTEMPTS})"
+        )
+
+        for candidate in dry_candidates[:MAX_FIX_ATTEMPTS]:
+            stage = candidate["stage"]
+            safe = stage.replace("_", "-")
+            ts = datetime.now(timezone.utc).strftime("%m%d%H%M")
+            task_id = f"mimi-overnight-{safe}-{ts}"
+            pr_description = candidate.get("pr_description") or ""
+            description = pr_description or (
+                f"Pipeline stage {stage} has been failing ({candidate['classification']}).\n"
+                f"Reason: {candidate['reason']}\n\n"
+                f"Investigate the root cause and apply a minimal fix. "
+                f"Read the stage script, check git history, look at the error pattern."
+            )
+            task = {
+                "id": task_id,
+                "description": description,
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+                "scope": "backend/pipeline/",
+                "context_files": [
+                    f"backend/pipeline/{stage.split('_')[0]}*.py",
+                    "backend/pipeline/lib/uk_ingestor.py",
+                ],
+            }
+            log.info(f"[DRY RUN] Task payload for {stage}:")
+            print(json.dumps(task, indent=2))
+
+        summary["completed_at"] = datetime.now(timezone.utc).isoformat()
         return summary
 
     if summary.get("error"):
@@ -560,11 +701,38 @@ def run_fix(config: dict, dry_run: bool = False) -> dict:
                 })
                 seen_stages.add(stage)
 
-    log.info(f"Fix candidates: {len(fix_candidates)} (max: {MAX_FIX_ATTEMPTS})")
+    if target_stage:
+        filtered = [c for c in fix_candidates if c["stage"] == target_stage]
+        if not filtered:
+            log.warning(
+                f"--target-stage '{target_stage}' specified but no matching "
+                f"pr-required candidate found — nothing to dispatch."
+            )
+            summary["completed_at"] = datetime.now(timezone.utc).isoformat()
+            return summary
+        fix_candidates = filtered
+
+    max_fix_cost = config.get("watcher", {}).get("max_fix_cost_usd", 1.00)
+    log.info(
+        f"Fix candidates: {len(fix_candidates)} (max: {MAX_FIX_ATTEMPTS}, "
+        f"budget cap: ${max_fix_cost:.2f})"
+    )
 
     fix_count = 0
+    cumulative_fix_cost = 0.0
     for candidate in fix_candidates[:MAX_FIX_ATTEMPTS]:
         stage = candidate["stage"]
+
+        # Budget guard — stop before dispatching if cap would be exceeded
+        if cumulative_fix_cost + FIX_COST_PER_DISPATCH > max_fix_cost:
+            log.warning(
+                f"Budget cap ${max_fix_cost:.2f} would be exceeded after "
+                f"{fix_count} fix(es) (~${cumulative_fix_cost:.4f} so far) — "
+                f"skipping {stage} and remaining candidates."
+            )
+            summary["budget_exceeded"] = True
+            break
+
         log.info(f"  Dispatching fix for {stage}...")
 
         branch = dispatch_fix_task(
@@ -576,6 +744,8 @@ def run_fix(config: dict, dry_run: bool = False) -> dict:
             max_fixes=MAX_FIX_ATTEMPTS,
         )
 
+        cumulative_fix_cost += FIX_COST_PER_DISPATCH
+        summary["estimated_cost_usd"] = cumulative_fix_cost
         fix_count += 1
         result = {
             "stage": stage,
@@ -587,6 +757,21 @@ def run_fix(config: dict, dry_run: bool = False) -> dict:
 
         if branch:
             log.info(f"    Branch created: {branch}")
+            # Record in pr_outcomes so briefing metrics and the admin widget track it
+            try:
+                import importlib.util as _ilu
+                _spec = _ilu.spec_from_file_location(
+                    "pipeline_watcher", MIMI_DIR / "pipeline_watcher.py"
+                )
+                _pw = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
+                _spec.loader.exec_module(_pw)  # type: ignore[union-attr]
+                _obs = _pw.load_observations()
+                _pw.record_pr_outcome(_obs, stage, branch)
+                _pw.save_observations(_obs)
+                result["tracked"] = True
+                log.info(f"    PR outcome recorded in observations")
+            except Exception as exc:
+                log.warning(f"    Could not record PR outcome: {exc}")
         else:
             log.warning(f"    Fix failed for {stage}")
 
@@ -617,6 +802,15 @@ def main() -> None:
         action="store_true",
         help="Print plan without making API calls or running the watcher",
     )
+    parser.add_argument(
+        "--target-stage",
+        metavar="STAGE",
+        default=None,
+        help=(
+            "fix mode only: restrict dispatching to this single stage name "
+            "(e.g. '07_mine_financials'). Ignored in observe mode."
+        ),
+    )
     args = parser.parse_args()
 
     log.info(f"Starting overnight loop — mode={args.mode}")
@@ -633,13 +827,20 @@ def main() -> None:
     # Ensure reviews directory exists
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Warn if --target-stage is supplied outside fix mode
+    if args.target_stage and args.mode != "fix":
+        log.warning(
+            f"--target-stage '{args.target_stage}' has no effect in observe mode "
+            f"and will be ignored."
+        )
+
     # Run the appropriate mode
     if args.mode == "fix":
         log.warning(
             "Running in FIX mode — Task Runner will create branches. "
             "Ensure observe mode has been validated first."
         )
-        summary = run_fix(config, dry_run=args.dry_run)
+        summary = run_fix(config, dry_run=args.dry_run, target_stage=args.target_stage)
     else:
         summary = run_observe(config, dry_run=args.dry_run)
 

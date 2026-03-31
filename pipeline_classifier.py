@@ -60,6 +60,7 @@ STAGE_FILES: dict[str, str] = {
     "14": "14_audit_ownership.py",
     "15": "15_enrich_charges.py",
     "16": "16_enrich_officers.py",
+    "17": "17_mine_pdf_accounts.py",
 }
 
 TERMINAL_STATUSES = {"failed", "partial", "stale", "cancelled"}
@@ -115,12 +116,24 @@ def _git_log(stage_code: str) -> str:
 
 
 def _error_hash(runs: list[dict]) -> str:
-    """Stable identifier for the current failure pattern (error count + stage name)."""
+    """Stable identifier for the current failure pattern.
+
+    Uses the first_error message text (normalised, first 60 chars) rather than
+    error count — two different errors on the same stage should hash differently,
+    and the same error with a different count should hash the same.
+    Falls back to error count if no error text is available.
+    """
+    import re as _re2
     failed = [r for r in runs if r.get("execution_status") in TERMINAL_STATUSES]
     if not failed:
         return ""
+    stage_name = failed[0].get("workflow_name", "")
+    first_error = (failed[0].get("first_error") or "").strip()
+    if first_error:
+        normalized = _re2.sub(r"\s+", " ", first_error)[:60]
+        return f"{stage_name}:{normalized}"
     total_errors = sum(r.get("total_errors") or 0 for r in failed)
-    return f"{failed[0].get('workflow_name', '')}:{total_errors}"
+    return f"{stage_name}:{total_errors}"
 
 
 def _fingerprint_error(runs: list[dict]) -> dict:
@@ -201,7 +214,7 @@ def enrich_issues(status: dict, observations: dict) -> list[dict]:
     ]
     for check_id, current_pct, threshold, stage in coverage_checks:
         if current_pct < threshold:
-            obs = observations.get("stages", {}).get(check_id, {})
+            obs = observations.get("stages", {}).get(stage, {})
             issues.append({
                 "stage": stage,
                 "type": "coverage",

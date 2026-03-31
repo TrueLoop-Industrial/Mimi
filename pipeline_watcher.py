@@ -37,6 +37,18 @@ MIMI_DIR = Path(__file__).parent
 OBSERVATIONS_FILE = MIMI_DIR / "pipeline_observations.json"
 CONFIG_FILE = MIMI_DIR / "config.yaml"
 
+# Load .env so ADMIN_STATUS_SECRET (and other vars) are available
+# even when the script isn't launched from a shell that sourced .env.
+_env_file = MIMI_DIR / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#"):
+            _line = _line.removeprefix("export ").strip()
+            _key, _, _val = _line.partition("=")
+            if _key and _val:
+                os.environ.setdefault(_key.strip(), _val.strip().strip('"'))
+
 
 def _configured_workspace() -> Path:
     try:
@@ -151,6 +163,7 @@ def mark_resolved(obs: dict, stage: str) -> None:
     if stage in obs["stages"]:
         obs["stages"][stage]["resolved_at"] = datetime.now(timezone.utc).isoformat()
         obs["stages"][stage]["consecutive_failures"] = 0
+        obs["stages"][stage]["auto_retried_count"] = 0
         obs["stages"][stage]["pr_branch"] = None
 
 
