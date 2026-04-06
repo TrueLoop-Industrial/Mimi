@@ -265,7 +265,7 @@ For each issue classify:
 - monitor: watch another cycle before acting
 
 **schema_mismatch handling** — if an issue has \
-`"error_fingerprint": {"error_type": "schema_mismatch"}`:
+`"error_fingerprint": {{"error_type": "schema_mismatch"}}`:
 - action MUST be `pr-required` (not auto-fix — retrying will always fail)
 - risk is always `high` (seeding stages blocked = entire pipeline stalled)
 - pr_description MUST say: "Write a migration file in /migrations/ to add \

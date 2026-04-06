@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .env
 reviews/
+
+logs/
+.DS_Store
