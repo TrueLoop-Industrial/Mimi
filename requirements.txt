@@ -1,6 +1,7 @@
 # Core (required)
 anthropic>=0.40.0
 pyyaml>=6.0
+httpx>=0.28.0
 
 # Optional: enable with `pip install -r requirements.txt`
 # Uncomment the providers you want to use

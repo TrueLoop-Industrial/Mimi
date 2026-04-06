@@ -96,29 +96,33 @@ Only commits if gates pass.
 
 ---
 
-## TODO Skills
+### `auto_retry_stage` ✅
+**Location:** `pipeline_watcher.py` → `auto_retry_stage(stage, config, observations)`
 
-### `auto_retry_stage` TODO
 Re-run a failed pipeline stage via the admin API with the same parameters
-(`batch_size: 500`, `country: GB`). Should check `auto_retried_count` against
+(`batch_size: 500`, `country: GB`). Checks `auto_retried_count` against
 `auto_fix_max_retries` from config before triggering. If max retries reached,
-escalate to `pr-required`.
+returns `escalated: True` so the caller can fall through to `pr-required`.
 
-**Planned location:** `pipeline_watcher.py` — already partially implemented in
-the `auto-fix` action block. Extract into a standalone function.
+**Inputs:** `stage: str`, `config: dict`, `observations: dict`
+**Outputs:** `AutoRetryResult` TypedDict — `success: bool`, `outcome: str`, `escalated: bool`
+
+---
+
+### `draft_fix` ✅
+**Location:** `pipeline_watcher.py` → `draft_fix(issue, config)`
+
+Given a classified issue with `action: pr-required`, builds a task using the
+`pipeline_fix_reactive` template and dispatches it to the TaskOrchestrator.
+Retries once on failure. Records the resulting branch name in observations as
+`pr_branch`.
+
+**Inputs:** `issue: dict` (from `classify_issues()`), `config: dict`
+**Outputs:** `DraftFixResult` TypedDict — `branch: str`, `success: bool`, `error: str | None`
 
 ---
 
-### `draft_fix` TODO
-Given a classified issue with `action: pr-required`, generate a task definition
-in the `pipeline_fix_reactive` template format and dispatch it to the Task
-Runner. Records the resulting branch name in observations as `pr_branch`.
-
-**Planned location:** `pipeline_watcher.py` → `dispatch_to_mimi()` is a partial
-implementation. Needs to be formalised into a proper skill with a typed
-interface and retry logic.
-
----
+## TODO Skills
 
 ### `deduplicate_issues` TODO
 Before creating a new observation, check if one already exists for the same
@@ -176,8 +180,8 @@ monitor_pipeline
     └── classify_issue
             └── track_observations
             └── resolve_stage
-            └── auto_retry_stage   (TODO — extracts from existing logic)
-            └── draft_fix
+            └── auto_retry_stage ✅
+            └── draft_fix ✅
                     └── run_task
                     └── deduplicate_issues (TODO — prevents duplicate PRs)
 

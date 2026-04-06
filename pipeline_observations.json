@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_check": "2026-03-26T02:40:21.513233+00:00",
+  "last_check": "2026-04-06T08:31:24.902695+00:00",
   "stages": {
     "13_enrich_psc_api": {
       "status": "NEW",
@@ -66,7 +66,7 @@
       "merged": false,
       "required_edits": false,
       "closed_at": "2026-03-26T09:15:00.000000+00:00",
-      "notes": "Self-healed: fix(pipeline): remove stale 'region' key (cef3d3b). Verified by successful 07:08 UTC run (2.56M records, 0 errors). Branch was empty — no PR needed."
+      "notes": "Self-healed: fix(pipeline): remove stale 'region' key (cef3d3b). Verified by successful 07:08 UTC run (2.56M records, 0 errors). Branch was empty \u2014 no PR needed."
     }
   ],
   "actions_log": [

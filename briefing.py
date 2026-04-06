@@ -128,16 +128,21 @@ def load_observations() -> dict:
             "last_check": None,
             "stages": {},
             "actions_log": [],
+            "pr_outcomes": [],
             "not_started": True,
         }
     try:
-        return json.loads(OBSERVATIONS_FILE.read_text())
+        obs = json.loads(OBSERVATIONS_FILE.read_text())
+        if "pr_outcomes" not in obs:
+            obs["pr_outcomes"] = []
+        return obs
     except Exception as exc:
         return {
             "version": 1,
             "last_check": None,
             "stages": {},
             "actions_log": [],
+            "pr_outcomes": [],
             "read_error": str(exc),
         }
 
@@ -251,6 +256,8 @@ def _section_overnight_activity(summary: dict, observations: dict) -> list[str]:
         fix_attempts = summary.get("fix_attempts", 0)
         fix_results = summary.get("fix_results", [])
         successful = sum(1 for r in fix_results if r.get("success"))
+        estimated_fix_cost = summary.get("estimated_cost_usd", 0.0)
+        budget_exceeded = summary.get("budget_exceeded", False)
         lines.extend([
             "",
             f"**Fix mode results:** {successful}/{fix_attempts} successful",
@@ -259,6 +266,13 @@ def _section_overnight_activity(summary: dict, observations: dict) -> list[str]:
             icon = "✅" if result.get("success") else "❌"
             branch = result.get("branch", "—")
             lines.append(f"  {icon} `{result['stage']}` → branch: `{branch}`")
+        lines.append(f"- Estimated fix session cost: ~${estimated_fix_cost:.4f}")
+        if budget_exceeded:
+            lines.append(
+                "- ⚠️ **Budget cap reached** — fix mode stopped early. "
+                "Not all candidates were dispatched. "
+                "Increase `watcher.max_fix_cost_usd` in config.yaml to allow more."
+            )
 
     return lines
 
@@ -369,6 +383,58 @@ def _section_branches_for_review(observations: dict) -> list[str]:
     return lines
 
 
+def _section_pr_quality(observations: dict) -> list[str]:
+    """PR Quality Tracker section — merge rate and outcome history."""
+    lines: list[str] = [
+        "## PR Quality Tracker",
+        "",
+    ]
+
+    outcomes = observations.get("pr_outcomes", [])
+
+    if not outcomes:
+        lines.append("*No PRs tracked yet.*")
+        return lines
+
+    total = len(outcomes)
+    decided = [e for e in outcomes if e.get("merged") is not None]
+    merged_count = sum(1 for e in decided if e.get("merged") is True)
+    edits_required_count = sum(1 for e in decided if e.get("required_edits") is True)
+    pending_count = total - len(decided)
+
+    decided_count = len(decided)
+    merge_rate = f"{merged_count}/{decided_count}" if decided else "N/A"
+    edit_rate = f"{edits_required_count}/{decided_count}" if decided else "N/A"
+    clean_merged_count = sum(
+        1 for e in decided if e.get("merged") is True and not e.get("required_edits")
+    )
+
+    lines.append(f"**Total opened:** {total}")
+    lines.append(f"**Merge rate:** {merge_rate} decided ({merged_count} merged, {decided_count - merged_count} closed, {pending_count} pending)")
+    lines.append(f"**Edit-required rate:** {edit_rate} of decided PRs needed follow-up edits")
+    lines.append(f"**Merged clean (no edits):** {clean_merged_count}")
+    lines.append("")
+    lines.append("| Branch | Stage | Opened | Outcome | Edits? | Notes |")
+    lines.append("|--------|-------|--------|---------|--------|-------|")
+
+    for entry in outcomes:
+        branch = entry.get("pr_branch", "—")
+        stage = _stage_label(entry.get("stage", "—"))
+        opened = _time_ago(entry.get("opened_at"))
+        merged = entry.get("merged")
+        if merged is True:
+            outcome_str = "✅ merged"
+        elif merged is False:
+            outcome_str = "❌ closed"
+        else:
+            outcome_str = "⏳ pending"
+        edits = "Yes" if entry.get("required_edits") else "—"
+        notes = entry.get("notes") or "—"
+        lines.append(f"| `{branch}` | {stage} | {opened} | {outcome_str} | {edits} | {notes} |")
+
+    return lines
+
+
 def _section_human_required(summary: dict, observations: dict) -> list[str]:
     """Human Required section — issues Mimi couldn't handle."""
     lines: list[str] = [
@@ -405,6 +471,14 @@ def _section_human_required(summary: dict, observations: dict) -> list[str]:
                 f"No PR has been opened. This may require manual investigation — "
                 f"check the stage script and recent CH API / data source changes."
             )
+
+    # Budget cap hit in fix mode
+    if summary.get("budget_exceeded"):
+        items.append(
+            "⚠️ **Fix-mode budget cap hit.** Fix mode stopped before dispatching "
+            "all candidates. Review `watcher.max_fix_cost_usd` in config.yaml "
+            "if you want broader overnight coverage."
+        )
 
     # Any generic error from the overnight run
     if summary.get("error"):
@@ -564,6 +638,8 @@ def generate_briefing(
         _section_issues_detected(summary, observations),
         ["---", ""],
         _section_branches_for_review(observations),
+        ["---", ""],
+        _section_pr_quality(observations),
         ["---", ""],
         _section_human_required(summary, observations),
         [""],

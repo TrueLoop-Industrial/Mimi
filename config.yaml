@@ -3,7 +3,7 @@
 # ─────────────────────────────────────────────────
 
 # Absolute path to your project root
-workspace: /Users/herbert-johnignacio/Desktop/Project Succession
+workspace: /Users/herbert-johnignacio/Desktop/Project Perpetua
 
 # Worktree directory (default: sibling to workspace)
 # Each task gets an isolated worktree here — your main workspace stays untouched
@@ -76,6 +76,37 @@ gates:
     command: "cd frontend && npx tsc --noEmit"
     scope: "frontend/**"
 
+  # Dashboard API health — run when admin routes change
+  - name: "Dashboard status API reachable"
+    type: command
+    scope: "frontend/src/app/api/admin/**"
+    command: >
+      SECRET=$(grep 'ADMIN_STATUS_SECRET' /Users/herbert-johnignacio/Desktop/Project\ Perpetua/frontend/.env.local | cut -d'"' -f2);
+      if ! curl -sf --max-time 2 -o /dev/null http://localhost:3000/api/health; then
+        echo "SKIPPED: dev server not reachable"; exit 0;
+      fi;
+      curl -sf --max-time 5 -o /dev/null "http://localhost:3000/api/admin/status?secret=${SECRET}"
+
+  - name: "Dashboard status API shape valid"
+    type: command
+    scope: "frontend/src/app/api/admin/**"
+    command: >
+      SECRET=$(grep 'ADMIN_STATUS_SECRET' /Users/herbert-johnignacio/Desktop/Project\ Perpetua/frontend/.env.local | cut -d'"' -f2);
+      if ! curl -sf --max-time 2 -o /dev/null http://localhost:3000/api/health; then
+        echo "SKIPPED: dev server not reachable"; exit 0;
+      fi;
+      curl -sf --max-time 5 "http://localhost:3000/api/admin/status?secret=${SECRET}" | python3 -c "import json, sys; d = json.load(sys.stdin); assert 'pipeline' in d; assert 'quality' in d; assert 'activity' in d; assert 'recent_runs' in d; print('shape ok')"
+
+  - name: "Dashboard pipeline-status API reachable"
+    type: command
+    scope: "frontend/src/app/api/admin/**"
+    command: >
+      SECRET=$(grep 'ADMIN_STATUS_SECRET' /Users/herbert-johnignacio/Desktop/Project\ Perpetua/frontend/.env.local | cut -d'"' -f2);
+      if ! curl -sf --max-time 2 -o /dev/null http://localhost:3000/api/health; then
+        echo "SKIPPED: dev server not reachable"; exit 0;
+      fi;
+      curl -sf --max-time 5 -o /dev/null "http://localhost:3000/api/admin/pipeline-status?secret=${SECRET}"
+
 # ── Task Templates ───────────────────────────────
 # Define reusable task shapes. Reference with `template:` in tasks.yaml.
 # Use {variable} placeholders that get filled from the task definition.
@@ -141,3 +172,4 @@ watcher:
   interval_seconds: 900                    # 15 minutes
   auto_fix_max_retries: 2                  # escalate to PR after N auto-retries
   pr_required_threshold: 3                 # consecutive failures before PR
+  max_fix_cost_usd: 1.00                   # stop fix mode if cumulative estimated cost exceeds this
