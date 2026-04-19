@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_check": "2026-04-19T09:58:50.189641+00:00",
+  "last_check": "2026-04-19T10:01:04.199371+00:00",
   "stages": {
     "13_enrich_psc_api": {
       "status": "NEW",
@@ -32,7 +32,7 @@
       "consecutive_failures": 0,
       "total_failures": 2,
       "first_seen_at": "2026-03-26T02:25:05.367874+00:00",
-      "resolved_at": "2026-03-26T09:15:00.000000+00:00",
+      "resolved_at": "2026-03-26T02:42:44.013308+00:00",
       "pr_branch": null
     },
     "05_seed_db": {
@@ -43,7 +43,7 @@
       "consecutive_failures": 0,
       "total_failures": 2,
       "first_seen_at": "2026-03-26T02:25:05.590083+00:00",
-      "resolved_at": "2026-03-26T09:15:00.000000+00:00",
+      "resolved_at": "2026-03-26T02:42:44.013248+00:00",
       "pr_branch": null
     },
     "webhook-05_seed_db": {
@@ -54,16 +54,16 @@
       "consecutive_failures": 0,
       "total_failures": 1,
       "first_seen_at": "2026-03-26T02:40:34.275010+00:00",
-      "resolved_at": "2026-03-26T09:15:00.000000+00:00",
+      "resolved_at": "2026-03-26T02:40:34.275010+00:00",
       "pr_branch": null
     },
     "webhook-07_mine_financials": {
-      "status": "NEW",
-      "last_seen_at": "2026-04-19T09:58:52.529081+00:00",
+      "status": "ONGOING",
+      "last_seen_at": "2026-04-19T10:01:06.328778+00:00",
       "last_action": "suppress",
-      "last_action_at": "2026-04-19T09:58:52.529081+00:00",
-      "consecutive_failures": 1,
-      "total_failures": 1,
+      "last_action_at": "2026-04-19T10:01:06.328778+00:00",
+      "consecutive_failures": 2,
+      "total_failures": 2,
       "first_seen_at": "2026-04-19T09:58:52.529081+00:00",
       "resolved_at": null,
       "pr_branch": null
@@ -81,6 +81,14 @@
     }
   ],
   "actions_log": [
+    {
+      "ts": "2026-04-19T10:01:06.328778+00:00",
+      "stage": "webhook-07_mine_financials",
+      "action": "suppress",
+      "classification": "ONGOING",
+      "reason": "Webhook trigger noise indicating the underlying stage is already running; not actionable and consistent with prior suppress decision.",
+      "outcome": null
+    },
     {
       "ts": "2026-04-19T09:58:52.529081+00:00",
       "stage": "webhook-07_mine_financials",

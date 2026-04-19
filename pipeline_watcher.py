@@ -97,12 +97,64 @@ class PrOutcome(TypedDict):
 
 # ── Observations state ─────────────────────────────────────────────────
 
+# Resolved stage entries older than this are pruned on load
+_RESOLVED_TTL_DAYS = 30
+
+# Sentinel used for the batch-resolved timestamp that got written during
+# the March 2026 schema incident — any resolved_at matching this exact
+# second should be treated as a corrupt timestamp and re-derived.
+_CORRUPT_RESOLVED_TS = "2026-03-26T09:15:00.000000+00:00"
+
+
+def _sanitise_observations(obs: dict) -> dict:
+    """
+    In-place cleanup of known corruption and TTL pruning.
+    Called on every load so the state stays healthy over time.
+    """
+    now = datetime.now(timezone.utc)
+    ttl_cutoff = now.timestamp() - (_RESOLVED_TTL_DAYS * 86_400)
+
+    stages = obs.get("stages", {})
+    to_delete: list[str] = []
+
+    for stage, data in stages.items():
+        resolved = data.get("resolved_at")
+
+        # Fix corrupt batch-resolved timestamp — derive from last_action_at instead
+        if resolved == _CORRUPT_RESOLVED_TS:
+            fallback = data.get("last_action_at") or data.get("last_seen_at")
+            if fallback:
+                data["resolved_at"] = fallback
+                resolved = fallback
+                log.debug(f"  sanitise: fixed corrupt resolved_at for {stage} → {resolved}")
+            else:
+                data["resolved_at"] = None
+                resolved = None
+
+        # Prune resolved entries past TTL
+        if resolved:
+            try:
+                resolved_ts = datetime.fromisoformat(resolved).timestamp()
+                if resolved_ts < ttl_cutoff:
+                    to_delete.append(stage)
+            except (ValueError, TypeError):
+                # Unparseable timestamp — null it out so it doesn't block action
+                data["resolved_at"] = None
+
+    for stage in to_delete:
+        del stages[stage]
+        log.debug(f"  sanitise: pruned stale resolved stage {stage} (>{_RESOLVED_TTL_DAYS}d old)")
+
+    obs["stages"] = stages
+    return obs
+
+
 def load_observations() -> dict:
     if OBSERVATIONS_FILE.exists():
         obs = json.loads(OBSERVATIONS_FILE.read_text())
         if "pr_outcomes" not in obs:
             obs["pr_outcomes"] = []
-        return obs
+        return _sanitise_observations(obs)
     return {"version": 1, "last_check": None, "stages": {}, "actions_log": [], "pr_outcomes": []}
 
 
