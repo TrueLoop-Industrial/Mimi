@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "last_check": "2026-04-19T00:31:58.730875+00:00",
+  "stages": {
+    "13_enrich_psc_api": {
+      "status": "NEW",
+      "last_seen_at": "2026-03-25T04:31:18.536417+00:00",
+      "last_action": "monitor",
+      "last_action_at": "2026-03-25T04:31:18.536417+00:00",
+      "consecutive_failures": 0,
+      "total_failures": 1,
+      "first_seen_at": "2026-03-25T04:31:18.536417+00:00",
+      "resolved_at": "2026-03-26T02:25:05.590113+00:00",
+      "pr_branch": null
+    },
+    "12_audit_quality": {
+      "status": "NEW",
+      "last_seen_at": "2026-03-25T04:31:22.075816+00:00",
+      "last_action": "auto-cancel",
+      "last_action_at": "2026-03-25T04:31:22.075816+00:00",
+      "consecutive_failures": 0,
+      "total_failures": 1,
+      "first_seen_at": "2026-03-25T04:31:22.075816+00:00",
+      "resolved_at": "2026-03-26T02:25:05.590125+00:00",
+      "pr_branch": null
+    },
+    "webhook-run-pipeline": {
+      "status": "ONGOING",
+      "last_seen_at": "2026-03-26T02:42:44.013308+00:00",
+      "last_action": "monitor",
+      "last_action_at": "2026-03-26T02:42:44.013308+00:00",
+      "consecutive_failures": 0,
+      "total_failures": 2,
+      "first_seen_at": "2026-03-26T02:25:05.367874+00:00",
+      "resolved_at": "2026-03-26T09:15:00.000000+00:00",
+      "pr_branch": null
+    },
+    "05_seed_db": {
+      "status": "ONGOING",
+      "last_seen_at": "2026-03-26T02:42:44.013248+00:00",
+      "last_action": "pr-required",
+      "last_action_at": "2026-03-26T02:42:44.013248+00:00",
+      "consecutive_failures": 0,
+      "total_failures": 2,
+      "first_seen_at": "2026-03-26T02:25:05.590083+00:00",
+      "resolved_at": "2026-03-26T09:15:00.000000+00:00",
+      "pr_branch": null
+    },
+    "webhook-05_seed_db": {
+      "status": "NEW",
+      "last_seen_at": "2026-03-26T02:40:34.275010+00:00",
+      "last_action": "monitor",
+      "last_action_at": "2026-03-26T02:40:34.275010+00:00",
+      "consecutive_failures": 0,
+      "total_failures": 1,
+      "first_seen_at": "2026-03-26T02:40:34.275010+00:00",
+      "resolved_at": "2026-03-26T09:15:00.000000+00:00",
+      "pr_branch": null
+    }
+  },
+  "pr_outcomes": [
+    {
+      "stage": "05_seed_db",
+      "pr_branch": "ai/mimi-fix-05-seed-db-03260240",
+      "opened_at": "2026-03-26T02:42:44.013236+00:00",
+      "merged": false,
+      "required_edits": false,
+      "closed_at": "2026-03-26T09:15:00.000000+00:00",
+      "notes": "Self-healed: fix(pipeline): remove stale 'region' key (cef3d3b). Verified by successful 07:08 UTC run (2.56M records, 0 errors). Branch was empty \u2014 no PR needed."
+    }
+  ],
+  "actions_log": [
+    {
+      "ts": "2026-03-26T02:42:44.013308+00:00",
+      "stage": "webhook-run-pipeline",
+      "action": "monitor",
+      "classification": "ONGOING",
+      "reason": "Single partial run with only 2 errors out of 119 companies processed suggests a non-catastrophic intermittent fault; prior observation already set action to monitor and consecutive failures remain at 1, so watch one more cycle before escalating.",
+      "outcome": null
+    },
+    {
+      "ts": "2026-03-26T02:42:44.013248+00:00",
+      "stage": "05_seed_db",
+      "action": "pr-required",
+      "classification": "ONGOING",
+      "reason": "Previously attempted auto-fix has not resolved the issue \u2014 the stage continues to fail with 1 consecutive failure, processes only 1 company per run, and seeds the companies_v3 table, meaning persistent failure risks downstream data integrity for the entire pipeline.",
+      "outcome": "branch:ai/mimi-fix-05-seed-db-03260240"
+    },
+    {
+      "ts": "2026-03-26T02:40:34.275010+00:00",
+      "stage": "webhook-05_seed_db",
+      "action": "monitor",
+      "classification": "NEW",
+      "reason": "Only 2 failures with 0 consecutive failures recorded, no prior observation history, and duration (~66s) looks normal \u2014 watch one more cycle before acting to confirm whether this is a transient trigger issue or a real fault.",
+      "outcome": null
+    },
+    {
+      "ts": "2026-03-26T02:25:05.590083+00:00",
+      "stage": "05_seed_db",
+      "action": "auto-fix",
+      "classification": "NEW",
+      "reason": "Single failed manual run with only 1 error across 2.5M companies processed, no consecutive failures, and the stage has a clean git history with no recent structural changes \u2014 safe to retry.",
+      "outcome": "failed"
+    },
+    {
+      "ts": "2026-03-26T02:25:05.367874+00:00",
+      "stage": "webhook-run-pipeline",
+      "action": "monitor",
+      "classification": "NEW",
+      "reason": "Single partial run with only 2 errors out of 119 companies processed and zero consecutive failures; too early to act without a second data point.",
+      "outcome": null
+    },
+    {
+      "ts": "2026-03-25T04:31:22.075816+00:00",
+      "stage": "12_audit_quality",
+      "action": "auto-cancel",
+      "classification": "NEW",
+      "reason": "Single stale run that started at 16:26 and was marked stale by 18:08 (~102 minutes with no output), indicating the process hung and needs to be cancelled so a clean retry can proceed.",
+      "outcome": "failed"
+    },
+    {
+      "ts": "2026-03-25T04:31:18.536417+00:00",
+      "stage": "13_enrich_psc_api",
+      "action": "monitor",
+      "classification": "NEW",
+      "reason": "Last run succeeded (50 companies, 0 errors); prior failures and stales appear to be transient concurrency/manual-trigger artefacts during a burst of manual runs, with 0 consecutive failures now.",
+      "outcome": null
+    }
+  ]
+}
