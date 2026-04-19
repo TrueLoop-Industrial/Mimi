@@ -319,12 +319,44 @@ def poll_pr_outcomes(obs: dict) -> int:
 
 # ── Status fetch ───────────────────────────────────────────────────────
 
+_FETCH_MAX_RETRIES = 3
+_FETCH_BACKOFF_BASE = 5  # seconds; doubles each retry (5 → 10 → 20)
+
+
 def fetch_status(base_url: str, secret: str) -> dict:
+    """
+    Fetch the admin status snapshot with exponential backoff retry.
+    Raises on final failure so callers can log and skip the cycle.
+    """
+    import time as _time
+
     url = f"{base_url.rstrip('/')}/api/admin/status"
     headers = {"Authorization": f"Bearer {secret}"}
-    resp = httpx.get(url, headers=headers, timeout=30.0, follow_redirects=True)
-    resp.raise_for_status()
-    return resp.json()
+    last_exc: Exception | None = None
+
+    for attempt in range(1, _FETCH_MAX_RETRIES + 1):
+        try:
+            resp = httpx.get(url, headers=headers, timeout=30.0, follow_redirects=True)
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            last_exc = exc
+            wait = _FETCH_BACKOFF_BASE * (2 ** (attempt - 1))
+            if attempt < _FETCH_MAX_RETRIES:
+                log.warning(
+                    f"Status fetch failed (attempt {attempt}/{_FETCH_MAX_RETRIES}): {exc} "
+                    f"— retrying in {wait}s"
+                )
+                _time.sleep(wait)
+            else:
+                log.error(
+                    f"Status fetch failed after {_FETCH_MAX_RETRIES} attempts: {exc}"
+                )
+        except httpx.HTTPStatusError as exc:
+            # 4xx/5xx are not retried — they indicate a real problem
+            raise
+
+    raise last_exc  # type: ignore[misc]
 
 
 # ── Admin API actions ──────────────────────────────────────────────────
