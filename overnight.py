@@ -56,6 +56,24 @@ def _load_dotenv_file() -> None:
 _load_dotenv_file()
 
 
+def _check_required_env() -> list[str]:
+    """Return list of missing required env vars. Logs a clear error for each."""
+    required = {
+        "ADMIN_STATUS_SECRET": "needed to authenticate with the Perpetua admin API",
+        "ANTHROPIC_API_KEY": "needed for Claude-based issue classification",
+    }
+    missing = []
+    for var, purpose in required.items():
+        if not os.environ.get(var):
+            missing.append(var)
+            # Use print here — logging not yet configured
+            print(
+                f"[mimi.overnight] ⚠️  Missing env var: {var} ({purpose})\n"
+                f"  Set it in ~/Mimi/.env or export before running.",
+                file=sys.stderr,
+            )
+    return missing
+
 
 MIMI_DIR = Path(__file__).parent
 OBSERVATIONS_FILE = MIMI_DIR / "pipeline_observations.json"
@@ -817,6 +835,11 @@ def main() -> None:
     log.info(f"Starting overnight loop — mode={args.mode}")
     if args.dry_run:
         log.info("[DRY RUN MODE] No API calls will be made")
+
+    # Pre-flight: warn clearly about missing env vars (don't abort — .env may load later)
+    missing_vars = _check_required_env()
+    if missing_vars:
+        log.warning(f"Missing env vars: {', '.join(missing_vars)} — some features will degrade")
 
     # Load config
     try:

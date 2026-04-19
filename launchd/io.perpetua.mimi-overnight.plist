@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Mimi overnight watcher — runs at 01:00 every night.
+
+  Install:
+    cp launchd/io.perpetua.mimi-overnight.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/io.perpetua.mimi-overnight.plist
+
+  Verify:
+    launchctl list io.perpetua.mimi-overnight
+
+  Unload:
+    launchctl unload ~/Library/LaunchAgents/io.perpetua.mimi-overnight.plist
+
+  Logs:
+    tail -f ~/Mimi/logs/overnight_stderr.log
+
+  NOTE: Secrets (ADMIN_STATUS_SECRET, ANTHROPIC_API_KEY) are loaded at runtime
+  from ~/Mimi/.env by overnight.py — do NOT hardcode them in this file.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.perpetua.mimi-overnight</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/herbert-johnignacio/Mimi/.venv/bin/python3</string>
+        <string>/Users/herbert-johnignacio/Mimi/overnight.py</string>
+        <string>--mode</string>
+        <string>fix</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>1</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/herbert-johnignacio/Mimi/logs/overnight_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/herbert-johnignacio/Mimi/logs/overnight_stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/herbert-johnignacio/Mimi</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Minimal PATH so python3 / git / npm are reachable -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/opt/homebrew/sbin</string>
+        <key>HOME</key>
+        <string>/Users/herbert-johnignacio</string>
+        <!--
+          Secrets are NOT listed here — overnight.py loads ~/Mimi/.env at startup.
+          If you need to override without editing .env, uncomment and fill:
+          <key>ADMIN_STATUS_SECRET</key>
+          <string>YOUR_SECRET_HERE</string>
+          <key>ANTHROPIC_API_KEY</key>
+          <string>sk-ant-...</string>
+        -->
+    </dict>
+
+    <!-- Do not run on load — only on schedule -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
