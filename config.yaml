@@ -117,3 +117,12 @@ templates:
       Run backend pytest after changes.
     scope: "backend/pipeline/"
     provider: claude  # Financial logic needs the strongest model
+
+# ── Pipeline Watcher (V1) ─────────────────────────────────────────────
+# Used by overnight.py and pipeline_watcher.py — do not remove.
+watcher:
+  base_url: "http://localhost:3000"
+  admin_secret: "${ADMIN_STATUS_SECRET}"   # reads from env at runtime
+  check_interval_seconds: 900              # 15 min between polls (--daemon mode)
+  auto_fix_max_retries: 2                  # retry a failing stage this many times before pr-required
+  max_fix_cost_usd: 1.00                   # abort overnight fix loop if cumulative cost exceeds this

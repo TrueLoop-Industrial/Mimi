@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_check": "2026-04-19T00:31:58.730875+00:00",
+  "last_check": "2026-04-19T09:58:50.189641+00:00",
   "stages": {
     "13_enrich_psc_api": {
       "status": "NEW",
@@ -56,6 +56,17 @@
       "first_seen_at": "2026-03-26T02:40:34.275010+00:00",
       "resolved_at": "2026-03-26T09:15:00.000000+00:00",
       "pr_branch": null
+    },
+    "webhook-07_mine_financials": {
+      "status": "NEW",
+      "last_seen_at": "2026-04-19T09:58:52.529081+00:00",
+      "last_action": "suppress",
+      "last_action_at": "2026-04-19T09:58:52.529081+00:00",
+      "consecutive_failures": 1,
+      "total_failures": 1,
+      "first_seen_at": "2026-04-19T09:58:52.529081+00:00",
+      "resolved_at": null,
+      "pr_branch": null
     }
   },
   "pr_outcomes": [
@@ -70,6 +81,14 @@
     }
   ],
   "actions_log": [
+    {
+      "ts": "2026-04-19T09:58:52.529081+00:00",
+      "stage": "webhook-07_mine_financials",
+      "action": "suppress",
+      "classification": "NEW",
+      "reason": "Webhook trigger noise on first sight with 0 consecutive failures; the underlying stage is already running so this duplicate trigger requires no action.",
+      "outcome": null
+    },
     {
       "ts": "2026-03-26T02:42:44.013308+00:00",
       "stage": "webhook-run-pipeline",
