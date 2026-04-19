@@ -253,6 +253,70 @@ def record_pr_outcome(
         obs["pr_outcomes"] = outcomes[-50:]
 
 
+# ── PR outcome polling (V1↔V2 feedback loop) ──────────────────────────
+
+def poll_pr_outcomes(obs: dict) -> int:
+    """
+    Check open Mimi-dispatched branches against GitHub and update
+    pr_outcomes + stage observations accordingly.
+
+    Uses `gh pr view <branch>` — requires `gh` CLI to be authenticated.
+    Returns the number of outcomes updated.
+    """
+    import subprocess as _sp
+
+    outcomes: list[dict] = obs.get("pr_outcomes", [])
+    open_prs = [p for p in outcomes if p.get("merged") is None and not p.get("closed_at")]
+    if not open_prs:
+        return 0
+
+    updated = 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    for pr in open_prs:
+        branch = pr.get("pr_branch", "")
+        stage = pr.get("stage", "")
+        if not branch:
+            continue
+
+        try:
+            result = _sp.run(
+                ["gh", "pr", "view", branch, "--json", "state,mergedAt,title"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0:
+                # Branch has no PR yet (or gh couldn't find it) — skip silently
+                continue
+
+            import json as _json
+            data = _json.loads(result.stdout)
+            state = data.get("state", "")  # OPEN | MERGED | CLOSED
+            merged_at = data.get("mergedAt")
+
+            if state == "MERGED":
+                pr["merged"] = True
+                pr["closed_at"] = merged_at or now
+                pr["notes"] = (pr.get("notes") or "") + " [auto-polled: merged]"
+                mark_resolved(obs, stage)
+                log.info(f"  poll_pr_outcomes: {branch} merged → resolved {stage}")
+                updated += 1
+
+            elif state == "CLOSED":
+                pr["merged"] = False
+                pr["closed_at"] = now
+                pr["notes"] = (pr.get("notes") or "") + " [auto-polled: closed without merge]"
+                # Clear pr_branch on stage so a fresh dispatch can happen if needed
+                if stage in obs.get("stages", {}):
+                    obs["stages"][stage]["pr_branch"] = None
+                log.info(f"  poll_pr_outcomes: {branch} closed (no merge) for {stage}")
+                updated += 1
+
+        except Exception as exc:
+            log.debug(f"  poll_pr_outcomes: could not check {branch}: {exc}")
+
+    return updated
+
+
 # ── Status fetch ───────────────────────────────────────────────────────
 
 def fetch_status(base_url: str, secret: str) -> dict:
@@ -463,6 +527,11 @@ def run_check(config: dict) -> None:
 
     observations = load_observations()
     observations["last_check"] = datetime.now(timezone.utc).isoformat()
+
+    # PR feedback pass: update any open Mimi branches from GitHub
+    pr_updates = poll_pr_outcomes(observations)
+    if pr_updates:
+        log.info(f"PR outcomes updated: {pr_updates} branch(es) resolved")
 
     # Self-heal pass: resolve stages whose latest run succeeded without calling Claude
     healed = _resolve_self_healed(status, observations)
